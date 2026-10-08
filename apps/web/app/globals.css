@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Runtime font load (not next/font) so the build doesn't require network
+   access in sandboxed/offline CI environments. Swap for next/font/google
+   once you have normal outbound access, if you prefer build-time hosting. */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background-color: #fafaf8;
+  color: #151924;
+}
+
+* {
+  border-color: #e7e6e1;
+}
+
+::selection {
+  background-color: #f0e3d0;
+}
+
+/* Dense, hairline table styling used across the app — tables are the
+   primary content surface here, not an afterthought. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.data-table th {
+  text-align: left;
+  font-weight: 500;
+  color: #5b6472;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e7e6e1;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #f0efea;
+  vertical-align: top;
+}
+
+.data-table tbody tr:hover {
+  background-color: #f6f5f1;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Scrollbar kept thin and unobtrusive rather than default chrome */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #d8d6cf;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (max-width: 820px) {
+  #mobile-device-warning {
+    display: flex !important;
+  }
+  #desktop-app-root {
+    display: none !important;
+  }
+}

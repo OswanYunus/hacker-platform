@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hacker
+      POSTGRES_PASSWORD: hacker_dev_password
+      POSTGRES_DB: hacker
+    ports:
+      - "5433:5432"
+    volumes:
+      - hacker_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hacker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    # Not yet wired into the API by default (see apps/api/src/services/
+    # queue.redis.md) — included here so it's ready when you enable the
+    # BullMQ adapter for multi-worker deployments.
+
+volumes:
+  hacker_postgres_data:

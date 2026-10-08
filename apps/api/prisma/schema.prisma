@@ -1,0 +1,437 @@
+// Hacker platform — database schema
+// Postgres. Run `npm run prisma:migrate` (see apps/api/README) to apply.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships        OrgMembership[]
+  createdProjects    Project[]            @relation("ProjectCreatedBy")
+  authorizedScopes   ScopeVersion[]       @relation("ScopeAuthorizedBy")
+  triggeredScans     Scan[]               @relation("ScanTriggeredBy")
+  auditEvents        AuditEvent[]
+  remediationUpdates RemediationStatus[]  @relation("RemediationUpdatedBy")
+  generatedReports   Report[]
+
+  @@index([email])
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  memberships OrgMembership[]
+  projects    Project[]
+  auditEvents AuditEvent[]
+}
+
+model OrgMembership {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrgRole  @default(MEMBER)
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Projects, targets, scope & authorization
+// ---------------------------------------------------------------------------
+
+model Project {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  createdById    String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  archivedAt     DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User         @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+
+  targets          Target[]
+  scopeVersions    ScopeVersion[]
+  authConfigs      AuthenticationConfig[]
+  scanConfigs      ScanConfig[]
+  scans            Scan[]
+  findings         Finding[]
+  discoveredAssets DiscoveredEndpointRecord[]
+  auditEvents      AuditEvent[]
+  ciIntegrations   CiIntegration[]
+
+  @@index([organizationId])
+}
+
+enum TargetType {
+  DOMAIN
+  URL
+  API_ENDPOINT
+  IP_RANGE
+}
+
+model Target {
+  id        String     @id @default(cuid())
+  projectId String
+  type      TargetType
+  value     String
+  label     String?
+  createdAt DateTime   @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+enum Environment {
+  PRODUCTION
+  STAGING
+  DEVELOPMENT
+  OTHER
+}
+
+/// A ScopeVersion is immutable once created — changing scope creates a new
+/// version and deactivates the previous one, so the audit trail always
+/// shows exactly what was authorized at the time any given scan ran.
+model ScopeVersion {
+  id                    String      @id @default(cuid())
+  projectId             String
+  allowedHosts          String[]
+  allowedIpRanges       String[]
+  allowedPaths          String[]
+  excludedPaths         String[]
+  environment           Environment
+  activeTestingAllowed  Boolean     @default(false)
+  maxRequestsPerSecond  Float       @default(2)
+  maxScanDurationSeconds Int        @default(1800)
+  maxTotalRequests      Int         @default(2000)
+  isActive              Boolean     @default(true)
+  authorizedById        String
+  authorizedAt          DateTime    @default(now())
+  authorizationStatement String?    // free-text confirmation of authorization to test
+  createdAt             DateTime    @default(now())
+
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  authorizedBy User    @relation("ScopeAuthorizedBy", fields: [authorizedById], references: [id])
+  scans        Scan[]
+
+  @@index([projectId, isActive])
+}
+
+enum AuthMechanism {
+  NONE
+  COOKIE
+  BEARER_TOKEN
+  LOGIN_FLOW
+  API_KEY
+}
+
+/// Stores how to authenticate as a given test role. The secret material
+/// itself lives in Secret (encrypted at rest); this row only holds a
+/// reference plus non-sensitive metadata.
+model AuthenticationConfig {
+  id            String        @id @default(cuid())
+  projectId     String
+  roleLabel     String        // e.g. "user", "admin", "anonymous"
+  mechanism     AuthMechanism
+  loginUrl      String?
+  usernameField String?
+  secretId      String?       @unique
+  createdAt     DateTime      @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  secret  Secret? @relation(fields: [secretId], references: [id])
+  scans   Scan[]
+}
+
+/// Envelope-encrypted secret storage (AES-256-GCM, key from KMS/env — see
+/// src/lib/crypto.ts). Never stores plaintext credentials or tokens.
+model Secret {
+  id             String   @id @default(cuid())
+  ciphertext     Bytes
+  iv             Bytes
+  authTag        Bytes
+  createdAt      DateTime @default(now())
+
+  authConfig    AuthenticationConfig?
+  ciIntegration CiIntegration?
+}
+
+// ---------------------------------------------------------------------------
+// Scan configuration & execution
+// ---------------------------------------------------------------------------
+
+enum ScanProfileEnum {
+  QUICK
+  STANDARD
+  DEEP
+  CI
+}
+
+model ScanConfig {
+  id              String          @id @default(cuid())
+  projectId       String
+  name            String
+  profile         ScanProfileEnum
+  enabledModules  String[]
+  ciFailPolicy    Json?
+  createdAt       DateTime        @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scans   Scan[]
+}
+
+enum ScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Scan {
+  id               String      @id @default(cuid())
+  projectId        String
+  scopeVersionId   String
+  scanConfigId     String?
+  authConfigId     String?
+  profile          ScanProfileEnum
+  status           ScanStatus  @default(QUEUED)
+  triggeredById    String
+  triggerSource    String      @default("manual") // manual | ci | api | schedule
+  startedAt        DateTime?
+  completedAt      DateTime?
+  requestCount     Int         @default(0)
+  stopReason       String?
+  failureReason    String?
+  createdAt        DateTime    @default(now())
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scopeVersion ScopeVersion  @relation(fields: [scopeVersionId], references: [id])
+  scanConfig   ScanConfig?   @relation(fields: [scanConfigId], references: [id])
+  authConfig   AuthenticationConfig? @relation(fields: [authConfigId], references: [id])
+  triggeredBy  User          @relation("ScanTriggeredBy", fields: [triggeredById], references: [id])
+
+  stageEvents ScanStageEvent[]
+  endpoints   DiscoveredEndpointRecord[]
+  findings    Finding[]
+  reports     Report[]
+
+  @@index([projectId, createdAt])
+}
+
+model ScanStageEvent {
+  id          String    @id @default(cuid())
+  scanId      String
+  stage       String
+  status      String    // started | completed | failed
+  summary     String?
+  occurredAt  DateTime  @default(now())
+
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+}
+
+// ---------------------------------------------------------------------------
+// Attack surface
+// ---------------------------------------------------------------------------
+
+model DiscoveredEndpointRecord {
+  id              String   @id @default(cuid())
+  scanId          String
+  projectId       String
+  url             String
+  methods         String[]
+  statusCodes     Int[]
+  queryParams     String[]
+  formFields      String[]
+  requiresAuth    String   // "true" | "false" | "unknown"
+  sourceType      String
+  contentType     String?
+  parentUrl       String?
+  createdAt       DateTime @default(now())
+
+  scan    Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([projectId, url])
+}
+
+model TechnologyRecord {
+  id         String  @id @default(cuid())
+  scanId     String
+  name       String
+  category   String
+  version    String?
+  confidence String
+  evidence   String
+
+  @@index([scanId])
+}
+
+// ---------------------------------------------------------------------------
+// Findings
+// ---------------------------------------------------------------------------
+
+model Finding {
+  id               String   @id @default(cuid())
+  scanId           String
+  projectId        String
+  ruleId           String
+  title            String
+  severity         String
+  confidence       String
+  cwe              String?
+  owaspCategory    String?
+  affectedEndpoint String
+  reproduction     String
+  rootCause        String
+  impact           String
+  remediation      String
+  references       String[]
+  verification     String
+  occurrences      Int      @default(1)
+  module           String
+  firstSeenStage   String
+  riskScore        Int
+  createdAt        DateTime @default(now())
+
+  scan       Scan                @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  project    Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  evidence   FindingEvidence[]
+  remediationStatus RemediationStatus?
+
+  @@index([scanId])
+  @@index([projectId, severity])
+  @@index([projectId, ruleId, affectedEndpoint])
+}
+
+model FindingEvidence {
+  id          String  @id @default(cuid())
+  findingId   String
+  description String
+  exchangeId  String?
+  detail      String?
+
+  finding Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  @@index([findingId])
+}
+
+enum RemediationState {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  ACCEPTED_RISK
+  FALSE_POSITIVE
+}
+
+model RemediationStatus {
+  id            String            @id @default(cuid())
+  findingId     String            @unique
+  state         RemediationState  @default(OPEN)
+  note          String?
+  updatedById   String?
+  updatedAt     DateTime          @updatedAt
+
+  finding   Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  updatedBy User?   @relation("RemediationUpdatedBy", fields: [updatedById], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+
+enum ReportFormat {
+  PDF
+  JSON
+  CSV
+  MARKDOWN
+}
+
+model Report {
+  id             String       @id @default(cuid())
+  scanId         String
+  format         ReportFormat
+  generatedById  String
+  generatedAt    DateTime     @default(now())
+  storageRef     String       // path/key where the rendered report lives
+
+  scan        Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  generatedBy User @relation(fields: [generatedById], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// CI/CD integration
+// ---------------------------------------------------------------------------
+
+model CiIntegration {
+  id              String   @id @default(cuid())
+  projectId       String
+  provider        String   // github_actions | gitlab_ci | generic | webhook
+  webhookTokenId  String?  @unique
+  failPolicy      Json
+  createdAt       DateTime @default(now())
+
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  webhookToken Secret? @relation(fields: [webhookTokenId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail
+// ---------------------------------------------------------------------------
+
+/// Append-only. Every authorization-relevant action is recorded here:
+/// project creation, scope changes, auth config changes, scan starts,
+/// remediation status changes. Never updated or deleted by the app.
+model AuditEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  projectId      String?
+  actorId        String?
+  action         String   // e.g. "project.created", "scope.authorized", "scan.started"
+  targetType     String
+  targetId       String
+  metadata       Json?
+  ipAddress      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  actor        User?        @relation(fields: [actorId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([projectId, createdAt])
+}
