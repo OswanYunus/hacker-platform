@@ -1,0 +1,20 @@
+FROM node:20-bookworm-slim
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/scanner-core/package.json packages/scanner-core/package.json
+RUN npm ci
+
+COPY apps/api apps/api
+COPY packages/scanner-core packages/scanner-core
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && npx prisma generate --schema apps/api/prisma/schema.prisma \
+    && npm run build --workspace @hacker/scanner-core \
+    && npm run build --workspace @hacker/api
+
+EXPOSE 4000
+CMD ["sh", "-c", "npx prisma migrate deploy --schema apps/api/prisma/schema.prisma && npm run start --workspace @hacker/api"]

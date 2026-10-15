@@ -1,4 +1,4 @@
-version: "3.9"
+name: hacker-platform-local
 
 services:
   postgres:
@@ -6,10 +6,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: hacker
-      POSTGRES_PASSWORD: hacker_dev_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run with --env-file .env.docker}
       POSTGRES_DB: hacker
-    ports:
-      - "5433:5432"
     volumes:
       - hacker_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,11 +19,39 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     # Not yet wired into the API by default (see apps/api/src/services/
     # queue.redis.md) — included here so it's ready when you enable the
     # BullMQ adapter for multi-worker deployments.
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://hacker:${POSTGRES_PASSWORD:?Run with --env-file .env.docker}@postgres:5432/hacker?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Run with --env-file .env.docker}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Run with --env-file .env.docker}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      PORT: 4000
+      NODE_ENV: production
+      LOG_LEVEL: info
+      SCAN_WORKER_CONCURRENCY: 2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "4000"
+
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
 
 volumes:
   hacker_postgres_data:
