@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
 import { Button, Field, inputClass } from "@/components/ui";
+import { PasswordInput } from "@/components/PasswordInput";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -56,12 +57,12 @@ export default function RegisterPage() {
             <Field label="Email">
               <input type="email" required className={inputClass} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             </Field>
-            <Field label="Password" hint="At least 12 characters.">
-              <input
-                type="password"
+            <Field label="Password" hint="At least 8 characters and one special character.">
+              <PasswordInput
                 required
-                minLength={12}
-                className={inputClass}
+                minLength={8}
+                maxLength={128}
+                autoComplete="new-password"
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
               />

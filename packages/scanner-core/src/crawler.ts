@@ -30,7 +30,13 @@ export interface CrawlResult {
  */
 export async function crawl(client: ScannerHttpClient, opts: CrawlOptions): Promise<CrawlResult> {
   const visited = new Set<string>();
-  const queue: Array<{ url: string; depth: number }> = opts.startUrls.map((u) => ({ url: normalizeUrl(u), depth: 0 }));
+  const seedUrls = new Set(opts.startUrls.map((u) => normalizeUrl(u)));
+  for (const startUrl of opts.startUrls) {
+    const origin = new URL(startUrl).origin;
+    seedUrls.add(normalizeUrl(new URL("/robots.txt", origin).toString()));
+    seedUrls.add(normalizeUrl(new URL("/sitemap.xml", origin).toString()));
+  }
+  const queue: Array<{ url: string; depth: number }> = Array.from(seedUrls, (url) => ({ url, depth: 0 }));
   const endpoints: DiscoveredEndpoint[] = [];
   const exchanges: HttpExchange[] = [];
   const endpointsByUrl = new Map<string, DiscoveredEndpoint>();
@@ -67,7 +73,19 @@ export async function crawl(client: ScannerHttpClient, opts: CrawlOptions): Prom
     const endpoint = recordEndpoint(endpointsByUrl, endpoints, next.url, exchange, "crawl");
 
     const contentType = (exchange.response.headers["content-type"] || "").toLowerCase();
-    if (!contentType.includes("html") || !exchange.response.body) continue;
+    if (!exchange.response.body) continue;
+    if (/\/robots\.txt(?:$|\?)/i.test(next.url)) {
+      const sitemapUrls = Array.from(exchange.response.body.matchAll(/^\s*Sitemap:\s*(\S+)\s*$/gim), (match) => match[1]);
+      enqueueDiscoveredUrls(sitemapUrls, next.url, next.depth, queue, opts);
+      continue;
+    }
+    if (contentType.includes("xml") || /sitemap(?:\.xml)?(?:$|\?)/i.test(next.url)) {
+      const $xml = cheerio.load(exchange.response.body, { xmlMode: true });
+      const sitemapUrls = $xml("loc").map((_, element) => $xml(element).text().trim()).get();
+      enqueueDiscoveredUrls(sitemapUrls, next.url, next.depth, queue, opts);
+      continue;
+    }
+    if (!contentType.includes("html")) continue;
 
     const $ = cheerio.load(exchange.response.body);
 
@@ -114,6 +132,21 @@ export async function crawl(client: ScannerHttpClient, opts: CrawlOptions): Prom
   }
 
   return { endpoints, exchanges, stopReason };
+}
+
+function enqueueDiscoveredUrls(
+  discovered: string[],
+  parentUrl: string,
+  depth: number,
+  queue: Array<{ url: string; depth: number }>,
+  opts: CrawlOptions,
+): void {
+  if (depth >= opts.maxDepth) return;
+  for (const value of discovered) {
+    const url = safeResolve(value, parentUrl);
+    if (!url || !validateScope(url, opts.scope).inScope) continue;
+    queue.push({ url: normalizeUrl(url), depth: depth + 1 });
+  }
 }
 
 function recordEndpoint(

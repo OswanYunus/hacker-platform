@@ -7,7 +7,7 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/scanner-core/package.json packages/scanner-core/package.json
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 
 COPY apps/web apps/web
 COPY packages/scanner-core packages/scanner-core

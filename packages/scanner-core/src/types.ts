@@ -185,6 +185,7 @@ export const SCANNER_MODULE_IDS = [
   "client-side",
   "dependency",
   "business-logic",
+  "governance",
 ] as const;
 export type ScannerModuleId = (typeof SCANNER_MODULE_IDS)[number];
 

@@ -1,15 +1,28 @@
 import { z } from "zod";
 
+export const passwordSchema = z
+  .string()
+  .min(8, "Password must be at least 8 characters")
+  .max(128, "Password must be no more than 128 characters")
+  .regex(/[^A-Za-z0-9\s]/, "Password must include at least one special character");
+
 export const registerSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(12, "Password must be at least 12 characters"),
+  password: passwordSchema,
   name: z.string().min(1).max(200),
   organizationName: z.string().min(1).max(200),
 });
 
 export const loginSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(1),
+  password: z.string().min(1).max(128),
+});
+
+export const forgotPasswordSchema = z.object({ email: z.string().email() });
+
+export const resetPasswordSchema = z.object({
+  token: z.string().regex(/^[a-f0-9]{64}$/i),
+  password: passwordSchema,
 });
 
 export const createProjectSchema = z.object({

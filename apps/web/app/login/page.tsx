@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
 import { Button, Field, inputClass } from "@/components/ui";
+import { PasswordInput } from "@/components/PasswordInput";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -44,8 +45,11 @@ export default function LoginPage() {
               <input type="email" required className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} />
             </Field>
             <Field label="Password">
-              <input type="password" required className={inputClass} value={password} onChange={(e) => setPassword(e.target.value)} />
+              <PasswordInput autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
             </Field>
+            <div className="-mt-2 text-right">
+              <Link href="/forgot-password" className="text-xs font-medium text-ink-700 underline">Forgot password?</Link>
+            </div>
             {error && <p className="text-xs text-[#A4221B]">{error}</p>}
             <Button type="submit" disabled={loading} className="w-full justify-center">
               {loading ? "Signing in…" : "Sign in"}

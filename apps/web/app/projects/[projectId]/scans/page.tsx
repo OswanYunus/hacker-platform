@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { projectNavItems } from "@/lib/projectNav";
 import { Panel, PanelHeader, Button, Field, inputClass } from "@/components/ui";
@@ -21,7 +21,7 @@ interface ScanSummary {
 const PROFILE_DESCRIPTIONS: Record<string, string> = {
   QUICK: "Fast passive checks, ~25 pages. Good for a sanity check before a deeper run.",
   STANDARD: "Normal assessment depth, ~100 pages.",
-  DEEP: "Comprehensive crawl, up to 400 pages. Longest running.",
+  DEEP: "Comprehensive crawl, up to 400 pages and 6 links deep. Uses the scope's request and time budgets.",
   CI: "Fast, regression-oriented — tuned for pipeline gating.",
 };
 
@@ -33,7 +33,8 @@ const STATUS_COLORS: Record<string, string> = {
   CANCELLED: "text-ink-500",
 };
 
-export default function ScansPage({ params }: { params: { projectId: string } }) {
+export default function ScansPage() {
+  const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const nav = projectNavItems(params.projectId);
   const [scans, setScans] = useState<ScanSummary[]>([]);

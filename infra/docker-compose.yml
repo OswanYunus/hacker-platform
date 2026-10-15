@@ -33,6 +33,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Run with --env-file .env.docker}
       MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Run with --env-file .env.docker}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      PASSWORD_RESET_EMAIL_FROM: ${PASSWORD_RESET_EMAIL_FROM:-}
       PORT: 4000
       NODE_ENV: production
       LOG_LEVEL: info

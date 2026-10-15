@@ -26,6 +26,7 @@ model User {
   email        String   @unique
   passwordHash String
   name         String
+  sessionVersion Int      @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -36,8 +37,22 @@ model User {
   auditEvents        AuditEvent[]
   remediationUpdates RemediationStatus[]  @relation("RemediationUpdatedBy")
   generatedReports   Report[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([email])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt, expiresAt])
 }
 
 model Organization {

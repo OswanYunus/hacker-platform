@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { projectNavItems } from "@/lib/projectNav";
 import { Panel, StatCard, inputClass } from "@/components/ui";
@@ -28,7 +28,8 @@ interface FindingRow {
 
 const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
 
-export default function FindingsPage({ params }: { params: { projectId: string } }) {
+export default function FindingsPage() {
+  const params = useParams<{ projectId: string }>();
   const nav = projectNavItems(params.projectId);
   const searchParams = useSearchParams();
   const scanId = searchParams.get("scanId") ?? undefined;

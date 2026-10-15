@@ -12,10 +12,11 @@ function getSecret(): string {
 export interface SessionTokenPayload {
   userId: string;
   email: string;
+  sessionVersion?: number;
 }
 
 export function signSessionToken(payload: SessionTokenPayload): string {
-  return jwt.sign(payload, getSecret(), { expiresIn: "12h" });
+  return jwt.sign({ ...payload, sessionVersion: payload.sessionVersion ?? 0 }, getSecret(), { expiresIn: "12h" });
 }
 
 export function verifySessionToken(token: string): SessionTokenPayload {

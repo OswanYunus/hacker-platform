@@ -1,11 +1,9 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 /* Runtime font load (not next/font) so the build doesn't require network
    access in sandboxed/offline CI environments. Swap for next/font/google
    once you have normal outbound access, if you prefer build-time hosting. */
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import "tailwindcss";
+@config "../tailwind.config.ts";
 
 :root {
   color-scheme: light;

@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../lib/prisma.js";
 import { hashPassword, verifyPassword, signSessionToken } from "../lib/auth.js";
-import { registerSchema, loginSchema } from "../lib/schemas.js";
+import { forgotPasswordSchema, loginSchema, registerSchema, resetPasswordSchema } from "../lib/schemas.js";
 import { SESSION_COOKIE } from "../plugins/authPlugin.js";
 import { recordAuditEvent } from "../services/auditLog.js";
+import { createHash, randomBytes } from "node:crypto";
 
 const COOKIE_OPTS = {
   httpOnly: true,
@@ -40,7 +41,7 @@ export default async function authRoutes(app: FastifyInstance) {
       ipAddress: req.ip,
     });
 
-    const token = signSessionToken({ userId: user.id, email: user.email });
+    const token = signSessionToken({ userId: user.id, email: user.email, sessionVersion: user.sessionVersion });
     reply.setCookie(SESSION_COOKIE, token, COOKIE_OPTS);
     return reply.code(201).send({ user: { id: user.id, email: user.email, name: user.name }, organization: { id: organization.id, name: organization.name } });
   });
@@ -56,7 +57,7 @@ export default async function authRoutes(app: FastifyInstance) {
     const valid = user ? await verifyPassword(user.passwordHash, password) : await verifyPassword(DUMMY_HASH, password);
     if (!user || !valid) return reply.code(401).send({ error: "Invalid email or password" });
 
-    const token = signSessionToken({ userId: user.id, email: user.email });
+    const token = signSessionToken({ userId: user.id, email: user.email, sessionVersion: user.sessionVersion });
     reply.setCookie(SESSION_COOKIE, token, COOKIE_OPTS);
     return reply.send({ user: { id: user.id, email: user.email, name: user.name } });
   });
@@ -64,6 +65,86 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post("/api/auth/logout", async (req, reply) => {
     reply.clearCookie(SESSION_COOKIE, { path: "/" });
     return reply.send({ ok: true });
+  });
+
+  app.post("/api/auth/forgot-password", async (req, reply) => {
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    const resendApiKey = process.env.RESEND_API_KEY;
+    const emailFrom = process.env.PASSWORD_RESET_EMAIL_FROM;
+    const publicAppUrl = process.env.PUBLIC_APP_URL;
+    if (!resendApiKey || !emailFrom || !publicAppUrl) {
+      return reply.code(503).send({ error: "Password reset email is not configured on this deployment." });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
+    if (user) {
+      const rawToken = randomBytes(32).toString("hex");
+      const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+      await prisma.$transaction([
+        prisma.passwordResetToken.deleteMany({ where: { userId: user.id, usedAt: null } }),
+        prisma.passwordResetToken.create({ data: { userId: user.id, tokenHash, expiresAt } }),
+      ]);
+
+      const resetUrl = new URL("/reset-password", publicAppUrl);
+      resetUrl.searchParams.set("token", rawToken);
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            "Content-Type": "application/json",
+          },
+          signal: AbortSignal.timeout(10_000),
+          body: JSON.stringify({
+            from: emailFrom,
+            to: [user.email],
+            subject: "Reset your Hacker account password",
+            text: `Use this one-time link within 30 minutes to reset your password: ${resetUrl.toString()}`,
+            html: `<p>Use this one-time link within 30 minutes to reset your password:</p><p><a href="${resetUrl.toString()}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
+          }),
+        });
+        if (!response.ok) req.log.error({ statusCode: response.status }, "Password reset email delivery failed");
+      } catch {
+        req.log.error("Password reset email delivery failed");
+      }
+    }
+
+    return reply.send({ message: "If an account exists for that email, a password reset link has been sent." });
+  });
+
+  app.post("/api/auth/reset-password", async (req, reply) => {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    const tokenHash = createHash("sha256").update(parsed.data.token).digest("hex");
+    const now = new Date();
+    const resetToken = await prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt <= now) {
+      return reply.code(400).send({ error: "This password reset link is invalid or expired." });
+    }
+
+    const passwordHash = await hashPassword(parsed.data.password);
+    const completed = await prisma.$transaction(async (tx: any) => {
+      const claimed = await tx.passwordResetToken.updateMany({
+        where: { id: resetToken.id, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (claimed.count !== 1) return false;
+      await tx.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash, sessionVersion: { increment: 1 } },
+      });
+      await tx.passwordResetToken.updateMany({
+        where: { userId: resetToken.userId, usedAt: null },
+        data: { usedAt: now },
+      });
+      return true;
+    });
+    if (!completed) return reply.code(400).send({ error: "This password reset link is invalid or expired." });
+    return reply.send({ message: "Password updated. Sign in with your new password." });
   });
 
   app.get("/api/auth/me", async (req, reply) => {

@@ -53,6 +53,27 @@ The free tunnel may show an ngrok browser interstitial the first time a visitor
 opens the link. Keep the ngrok window running. Scans make real HTTP requests to
 the targets you submit, so only scan systems you are authorized to test.
 
+## Configure password-reset email
+
+Password reset uses Resend. Verify a sender domain in Resend, create an API key,
+and set these values in the ignored `.env.docker` file:
+
+```text
+RESEND_API_KEY=re_...
+PASSWORD_RESET_EMAIL_FROM=security@your-verified-domain.example
+PUBLIC_APP_URL=https://your-ngrok-domain.ngrok-free.dev
+```
+
+Recreate the API container after changing these settings:
+
+```powershell
+docker compose --env-file .env.docker -f infra/docker-compose.yml up -d --force-recreate api
+```
+
+Reset tokens are single-use, expire after 30 minutes, and are stored only as
+SHA-256 hashes. Until email is configured, the reset form will explain that
+recovery is unavailable on this deployment.
+
 ## Stop and resume
 
 Press Ctrl+C in the ngrok window to close public access. Stop containers with:

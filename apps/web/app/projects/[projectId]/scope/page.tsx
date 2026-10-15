@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { projectNavItems } from "@/lib/projectNav";
 import { ScopeSummary } from "@/components/ScopeSummary";
@@ -30,7 +31,8 @@ interface ScopeVersion {
   authorizationStatement: string;
 }
 
-export default function ScopePage({ params }: { params: { projectId: string } }) {
+export default function ScopePage() {
+  const params = useParams<{ projectId: string }>();
   const nav = projectNavItems(params.projectId);
   const [targets, setTargets] = useState<Target[]>([]);
   const [scopeHistory, setScopeHistory] = useState<ScopeVersion[]>([]);

@@ -21,9 +21,11 @@ export default fp(async function authPlugin(app: FastifyInstance) {
       const payload = verifySessionToken(token);
       const user = await prisma.user.findUnique({
         where: { id: payload.userId },
-        select: { id: true, email: true, name: true },
+        select: { id: true, email: true, name: true, sessionVersion: true },
       });
-      if (user) req.currentUser = user;
+      if (user && user.sessionVersion === payload.sessionVersion) {
+        req.currentUser = { id: user.id, email: user.email, name: user.name };
+      }
     } catch {
       // invalid/expired token: leave currentUser unset, routes that
       // require auth will reject via requireAuth()

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { projectNavItems } from "@/lib/projectNav";
 import { Panel, PanelHeader } from "@/components/ui";
@@ -90,7 +91,8 @@ function humanValue(key: string, value: unknown): string {
   return str;
 }
 
-export default function AuditPage({ params }: { params: { projectId: string } }) {
+export default function AuditPage() {
+  const params = useParams<{ projectId: string }>();
   const nav = projectNavItems(params.projectId);
   const [events, setEvents] = useState<AuditEventRow[]>([]);
   const [category, setCategory] = useState<string>("ALL");

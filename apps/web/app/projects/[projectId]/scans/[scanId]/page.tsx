@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { projectNavItems } from "@/lib/projectNav";
 import { Panel, PanelHeader, Button } from "@/components/ui";
@@ -32,7 +32,8 @@ interface ScanDetail {
   stopReason?: string;
 }
 
-export default function ScanLivePage({ params }: { params: { projectId: string; scanId: string } }) {
+export default function ScanLivePage() {
+  const params = useParams<{ projectId: string; scanId: string }>();
   const nav = projectNavItems(params.projectId);
   const [scan, setScan] = useState<ScanDetail | null>(null);
   const [stageStatus, setStageStatus] = useState<Record<string, "pending" | "active" | "done">>({});

@@ -19,8 +19,6 @@ import {
   checkMassAssignment,
 } from "./checks/authorization.js";
 import {
-  checkMissingBruteforceLockout,
-  checkDefaultCredentials,
   checkSessionTokenEntropy,
   checkPasswordInUrl,
 } from "./checks/authentication.js";
@@ -28,12 +26,13 @@ import { correlateFindings } from "./correlation.js";
 import { prioritize } from "./riskScoring.js";
 import { validateScope } from "./scope.js";
 import { detectTechnologies } from "./techDetection.js";
+import { reviewPublicDocuments } from "./checks/governance.js";
 import type { HttpExchange, RawObservation, ScanEvent, ScanResult, ScanRunConfig, ScanStage } from "./types.js";
 
 const PROFILE_LIMITS: Record<string, { maxPages: number; maxDepth: number }> = {
   quick: { maxPages: 25, maxDepth: 2 },
   standard: { maxPages: 100, maxDepth: 3 },
-  deep: { maxPages: 400, maxDepth: 5 },
+  deep: { maxPages: 400, maxDepth: 6 },
   ci: { maxPages: 50, maxDepth: 2 },
 };
 
@@ -51,6 +50,20 @@ const SENSITIVE_PATH_PROBES = [
   "/.DS_Store",
   "/swagger.json",
   "/openapi.json",
+  "/openapi.yaml",
+  "/api/openapi.json",
+  "/api-docs",
+  "/swagger/v1/swagger.json",
+  "/v3/api-docs",
+  "/.well-known/security.txt",
+  "/security.txt",
+  "/privacy-policy",
+  "/privacy",
+  "/privacy-notice",
+  "/terms-of-service",
+  "/terms-and-conditions",
+  "/terms",
+  "/acceptable-use",
   "/robots.txt",
   "/sitemap.xml",
 ];
@@ -156,6 +169,7 @@ export async function runScan(
     // 6. Passive analysis
     const rawObservations: RawObservation[] = [];
     await runStage("passive_analysis", async () => {
+      rawObservations.push(...reviewPublicDocuments(allExchanges, config.targetBaseUrls));
       for (const ex of allExchanges) {
         rawObservations.push(
           ...checkSecurityHeaders(ex),
@@ -222,7 +236,7 @@ export async function runScan(
       emit({
         type: "scan_log",
         level: "info",
-        message: `Active testing enabled — running injection, IDOR, and authentication probes against ${crawlResult.endpoints.length} endpoints.`,
+        message: `Active testing enabled — running injection, authorization, and non-credential session checks against ${crawlResult.endpoints.length} endpoints.`,
         at: new Date().toISOString(),
       });
 
@@ -265,11 +279,9 @@ export async function runScan(
           ...(await checkCommandInjection(client, endpoint)),
         );
 
-        // Authentication probes (login endpoints only)
-        rawObservations.push(
-          ...(await checkMissingBruteforceLockout(client, endpoint)),
-          ...(await checkDefaultCredentials(client, endpoint)),
-        );
+        // Credential guessing and lockout-triggering checks are deliberately
+        // excluded. The scanner audits published password policy signals and
+        // leaves server enforcement to an owner-provided test account.
       }
 
       emit({

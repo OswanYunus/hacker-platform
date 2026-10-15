@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { AppShell } from "@/components/AppShell";
@@ -25,7 +26,8 @@ interface ProjectDetail {
   _count: { findings: number };
 }
 
-export default function ProjectOverviewPage({ params }: { params: { projectId: string } }) {
+export default function ProjectOverviewPage() {
+  const params = useParams<{ projectId: string }>();
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const nav = projectNavItems(params.projectId);
 
