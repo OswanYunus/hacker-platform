@@ -6,6 +6,9 @@ import { recordAuditEvent } from "../services/auditLog.js";
 import { scanQueue } from "../services/scanQueue.js";
 import { cancelScan } from "../services/scanOrchestrator.js";
 import { scanEventBus } from "../services/eventBus.js";
+import { stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { removeScanSessionLog, scanSessionLogPath } from "../services/scanSessionLog.js";
 
 export default async function scanRoutes(app: FastifyInstance) {
   app.post("/api/projects/:projectId/scans", async (req, reply) => {
@@ -114,6 +117,7 @@ export default async function scanRoutes(app: FastifyInstance) {
 
     await prisma.technologyRecord.deleteMany({ where: { scanId } });
     await prisma.scan.delete({ where: { id: scanId } });
+    await removeScanSessionLog(scanId);
 
     await recordAuditEvent({
       organizationId: access.project.organizationId,
@@ -149,6 +153,7 @@ export default async function scanRoutes(app: FastifyInstance) {
     if (scanIds.length > 0) {
       await prisma.technologyRecord.deleteMany({ where: { scanId: { in: scanIds } } });
       await prisma.scan.deleteMany({ where: { id: { in: scanIds } } });
+      await Promise.all(scanIds.map((id) => removeScanSessionLog(id)));
       await recordAuditEvent({
         organizationId: access.project.organizationId,
         projectId,
@@ -192,6 +197,31 @@ export default async function scanRoutes(app: FastifyInstance) {
       clearInterval(heartbeat);
       unsubscribe();
     });
+  });
+
+  app.get("/api/scans/:scanId/log", async (req, reply) => {
+    const { scanId } = req.params as { scanId: string };
+    const scan = await prisma.scan.findUnique({ where: { id: scanId } });
+    if (!scan) return reply.code(404).send({ error: "Scan not found" });
+    const access = await requireProjectAccess(req, reply, scan.projectId);
+    if (!access) return;
+
+    try {
+      const timestamp = scan.startedAt ?? scan.createdAt;
+      const logPath = scanSessionLogPath(scan.id, timestamp);
+      const fileInfo = await stat(logPath);
+      const stamp = timestamp.toISOString().replace(/[:.]/g, "-");
+      return reply
+        .header("Content-Type", "application/x-ndjson; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="scan-${scan.id}-${stamp}.jsonl"`)
+        .header("Content-Length", fileInfo.size)
+        .send(createReadStream(logPath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return reply.code(404).send({ error: "No session log has been written for this scan yet." });
+      }
+      throw error;
+    }
   });
 
   app.get("/api/projects/:projectId/findings", async (req, reply) => {

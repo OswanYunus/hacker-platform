@@ -195,11 +195,11 @@ export type ScannerModuleId = (typeof SCANNER_MODULE_IDS)[number];
 
 export type ScanEvent =
   | { type: "stage_started"; stage: ScanStage; at: string }
-  | { type: "stage_completed"; stage: ScanStage; at: string; summary?: string }
+  | { type: "stage_completed"; stage: ScanStage; at: string; summary?: string; durationMs?: number }
   | { type: "endpoint_discovered"; endpoint: DiscoveredEndpoint; at: string }
   | { type: "technology_detected"; technology: TechnologyFingerprint; at: string }
   | { type: "finding_raised"; finding: Finding; at: string }
-  | { type: "request_issued"; method: string; url: string; at: string }
+  | { type: "request_issued"; method: string; url: string; stage: ScanStage; at: string }
   | { type: "scan_log"; level: "info" | "warn" | "error"; message: string; at: string }
   | { type: "scan_completed"; at: string; findingCount: number; requestCount: number }
   | { type: "scan_failed"; at: string; reason: string }

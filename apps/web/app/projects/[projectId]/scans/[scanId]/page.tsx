@@ -62,40 +62,46 @@ export default function ScanLivePage() {
     switch (event.type) {
       case "stage_started":
         setStageStatus((s) => ({ ...s, [event.stage]: "active" }));
-        appendLog(`Started: ${STAGE_LABELS[event.stage]}`);
+        appendLog(`Started: ${STAGE_LABELS[event.stage]}`, event.at);
         break;
       case "stage_completed":
         setStageStatus((s) => ({ ...s, [event.stage]: "done" }));
+        appendLog(`Completed: ${STAGE_LABELS[event.stage]}${event.durationMs === undefined ? "" : ` (${event.durationMs}ms)`}`, event.at);
         break;
       case "finding_raised":
         setFindings((f) => [event.finding, ...f]);
+        appendLog(`[${event.finding.severity.toUpperCase()}] ${event.finding.title} — ${event.finding.affectedEndpoint}`, event.at);
         break;
       case "request_issued":
         setRequestCount((c) => c + 1);
+        appendLog(`${event.stage}: ${event.method} ${redactUrl(event.url)}`, event.at);
         break;
       case "scan_log":
-        appendLog(event.message);
+        appendLog(event.message, event.at);
         break;
       case "endpoint_discovered":
-        appendLog(`Discovered endpoint: ${event.endpoint.url}`);
+        appendLog(`Discovered endpoint (${event.endpoint.sourceType}): ${redactUrl(event.endpoint.url)}`, event.at);
+        break;
+      case "technology_detected":
+        appendLog(`Technology detected: ${event.technology.name}${event.technology.version ? ` ${event.technology.version}` : ""}`, event.at);
         break;
       case "scan_completed":
-        appendLog(`Scan completed — ${event.findingCount} finding(s), ${event.requestCount} requests issued.`);
+        appendLog(`Scan completed — ${event.findingCount} finding(s), ${event.requestCount} requests issued.`, event.at);
         setDone(true);
         break;
       case "scan_failed":
-        appendLog(`Scan failed: ${event.reason}`);
+        appendLog(`Scan failed: ${event.reason}`, event.at);
         setDone(true);
         break;
       case "scan_cancelled":
-        appendLog("Scan cancelled.");
+        appendLog("Scan cancelled.", event.at);
         setDone(true);
         break;
     }
   }
 
-  function appendLog(line: string) {
-    setLogLines((l) => [...l.slice(-199), `${new Date().toLocaleTimeString()}  ${line}`]);
+  function appendLog(line: string, at = new Date().toISOString()) {
+    setLogLines((l) => [...l.slice(-199), `${at}  ${line}`]);
     requestAnimationFrame(() => logRef.current?.scrollTo({ top: logRef.current.scrollHeight }));
   }
 
@@ -160,6 +166,12 @@ export default function ScanLivePage() {
                 <Link href={`/projects/${params.projectId}/findings?scanId=${params.scanId}`}>
                   <Button>View findings</Button>
                 </Link>
+                <a
+                  href={`/api/scans/${params.scanId}/log`}
+                  className="rounded-sm border border-paper-200 bg-white px-3 py-1.5 text-sm font-medium text-ink-900 hover:bg-paper-100"
+                >
+                  Download session log
+                </a>
                 <button
                   onClick={deleteThisScan}
                   className="text-xs text-ink-600 underline hover:text-[#A4221B]"
@@ -225,6 +237,25 @@ export default function ScanLivePage() {
       </div>
     </AppShell>
   );
+}
+
+function redactUrl(value: string): string {
+  return value.replace(/https?:\/\/[^\s"'<>]+/gi, (candidate) => {
+    try {
+      const url = new URL(candidate);
+      for (const key of Array.from(url.searchParams.keys())) {
+        if (/password|secret|token|authorization|cookie|credential|api[_-]?key/i.test(key)) {
+          url.searchParams.set(key, "[REDACTED]");
+        }
+      }
+      url.username = "";
+      url.password = "";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return candidate;
+    }
+  });
 }
 
 function StageDot({ status }: { status: "pending" | "active" | "done" }) {

@@ -81,14 +81,14 @@ export class ScannerHttpClient {
     }
   }
 
-  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  private buildHeaders(extra?: Record<string, string>, anonymous = false): Record<string, string> {
     const headers: Record<string, string> = {
       "User-Agent": this.opts.userAgent ?? "HackerScanner/0.1 (+authorized-security-assessment)",
       ...extra,
     };
-    if (this.opts.auth?.cookieHeader) headers["Cookie"] = this.opts.auth.cookieHeader;
-    if (this.opts.auth?.bearerToken) headers["Authorization"] = `Bearer ${this.opts.auth.bearerToken}`;
-    if (this.opts.auth?.extraHeaders) Object.assign(headers, this.opts.auth.extraHeaders);
+    if (!anonymous && this.opts.auth?.cookieHeader) headers["Cookie"] = this.opts.auth.cookieHeader;
+    if (!anonymous && this.opts.auth?.bearerToken) headers["Authorization"] = `Bearer ${this.opts.auth.bearerToken}`;
+    if (!anonymous && this.opts.auth?.extraHeaders) Object.assign(headers, this.opts.auth.extraHeaders);
     return headers;
   }
 
@@ -100,7 +100,7 @@ export class ScannerHttpClient {
     method: string,
     url: string,
     stage: ScanStage,
-    init?: { headers?: Record<string, string>; body?: string; maxRedirects?: number },
+    init?: { headers?: Record<string, string>; body?: string; maxRedirects?: number; anonymous?: boolean },
   ): Promise<HttpExchange> {
     this.checkBudgets();
 
@@ -122,7 +122,7 @@ export class ScannerHttpClient {
       this.requestCount++;
 
       const start = Date.now();
-      const headers = this.buildHeaders(init?.headers);
+      const headers = this.buildHeaders(init?.headers, init?.anonymous);
       const res = await fetch(currentUrl, {
         method,
         headers,
@@ -160,7 +160,7 @@ export class ScannerHttpClient {
       response: lastResponse,
       stage,
       discoveredAt: new Date().toISOString(),
-      actorRole: this.opts.auth?.role,
+      actorRole: init?.anonymous ? undefined : this.opts.auth?.role,
     };
     this.opts.onExchange?.(exchange);
     return exchange;

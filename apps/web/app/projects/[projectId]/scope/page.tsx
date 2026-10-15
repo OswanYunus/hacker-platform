@@ -31,11 +31,22 @@ interface ScopeVersion {
   authorizationStatement: string;
 }
 
+interface AuthConfigSummary {
+  id: string;
+  roleLabel: string;
+  mechanism: string;
+  loginUrl?: string | null;
+  createdAt: string;
+}
+
 export default function ScopePage() {
   const params = useParams<{ projectId: string }>();
   const nav = projectNavItems(params.projectId);
   const [targets, setTargets] = useState<Target[]>([]);
   const [scopeHistory, setScopeHistory] = useState<ScopeVersion[]>([]);
+  const [authConfigs, setAuthConfigs] = useState<AuthConfigSummary[]>([]);
+  const [authForm, setAuthForm] = useState({ roleLabel: "test-user", mechanism: "BEARER_TOKEN", loginUrl: "", secretValue: "" });
+  const [authError, setAuthError] = useState<string | null>(null);
   const [newTarget, setNewTarget] = useState({ type: "DOMAIN", value: "" });
   const [form, setForm] = useState({
     allowedHosts: "",
@@ -51,9 +62,10 @@ export default function ScopePage() {
   const [saved, setSaved] = useState(false);
 
   function reload() {
-    api.get<{ project: { targets: Target[]; scopeVersions: ScopeVersion[] } }>(`/api/projects/${params.projectId}`).then((r) => {
+    api.get<{ project: { targets: Target[]; scopeVersions: ScopeVersion[]; authConfigs: AuthConfigSummary[] } }>(`/api/projects/${params.projectId}`).then((r) => {
       setTargets(r.project.targets);
       setScopeHistory(r.project.scopeVersions);
+      setAuthConfigs(r.project.authConfigs);
     });
   }
 
@@ -131,6 +143,21 @@ export default function ScopePage() {
     });
     setSaved(true);
     reload();
+  }
+
+  async function saveAuthConfig(e: React.FormEvent) {
+    e.preventDefault();
+    setAuthError(null);
+    try {
+      await api.post(`/api/projects/${params.projectId}/auth-configs`, {
+        ...authForm,
+        loginUrl: authForm.loginUrl || undefined,
+      });
+      setAuthForm({ ...authForm, secretValue: "" });
+      reload();
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Could not save test role.");
+    }
   }
 
   async function resetActiveScope() {
@@ -288,6 +315,43 @@ export default function ScopePage() {
               <Button type="submit" variant="secondary">
                 Add target
               </Button>
+            </form>
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHeader title="Owner-provided test roles" subtitle="Use a dedicated account or session that you are authorized to use for this assessment." />
+          <div className="space-y-4 p-4">
+            <p className="text-xs text-ink-600">
+              Credentials are encrypted at rest and never written to scan logs. The scanner only sends them to hosts and paths in the active authorized scope. Cookie and bearer-token profiles are supported.
+            </p>
+            {authConfigs.length > 0 && (
+              <ul className="space-y-1 text-xs text-ink-700">
+                {authConfigs.map((config) => (
+                  <li key={config.id}>{config.roleLabel} · {config.mechanism}{config.loginUrl ? ` · ${config.loginUrl}` : ""}</li>
+                ))}
+              </ul>
+            )}
+            {authError && <p className="text-xs text-[#A4221B]">{authError}</p>}
+            <form onSubmit={saveAuthConfig} className="grid gap-3 md:grid-cols-2">
+              <Field label="Test role label" hint="For example: staging-admin or test-customer.">
+                <input required className={inputClass} value={authForm.roleLabel} onChange={(e) => setAuthForm({ ...authForm, roleLabel: e.target.value })} />
+              </Field>
+              <Field label="Credential type">
+                <select className={inputClass} value={authForm.mechanism} onChange={(e) => setAuthForm({ ...authForm, mechanism: e.target.value })}>
+                  <option value="BEARER_TOKEN">Bearer token</option>
+                  <option value="COOKIE">Session cookie</option>
+                </select>
+              </Field>
+              <Field label="Login URL (optional)">
+                <input type="url" className={inputClass} placeholder="https://staging.example.com/login" value={authForm.loginUrl} onChange={(e) => setAuthForm({ ...authForm, loginUrl: e.target.value })} />
+              </Field>
+              <Field label={authForm.mechanism === "COOKIE" ? "Cookie header value" : "Bearer token"}>
+                <input required type="password" autoComplete="new-password" className={inputClass} value={authForm.secretValue} onChange={(e) => setAuthForm({ ...authForm, secretValue: e.target.value })} />
+              </Field>
+              <div className="md:col-span-2">
+                <Button type="submit">Save test role</Button>
+              </div>
             </form>
           </div>
         </Panel>

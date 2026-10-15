@@ -27,6 +27,7 @@ import { prioritize } from "./riskScoring.js";
 import { validateScope } from "./scope.js";
 import { detectTechnologies } from "./techDetection.js";
 import { reviewPublicDocuments } from "./checks/governance.js";
+import { compareAnonymousAccess, discoverApiSpecGetRoutes, type ApiSpecRoute } from "./checks/apiSurface.js";
 import type { HttpExchange, RawObservation, ScanEvent, ScanResult, ScanRunConfig, ScanStage } from "./types.js";
 
 const PROFILE_LIMITS: Record<string, { maxPages: number; maxDepth: number }> = {
@@ -94,7 +95,7 @@ export async function runScan(
     auth: config.authContext,
     onExchange: (ex) => {
       allExchanges.push(ex);
-      emit({ type: "request_issued", method: ex.request.method, url: ex.request.url, at: new Date().toISOString() });
+      emit({ type: "request_issued", method: ex.request.method, url: ex.request.url, stage: ex.stage, at: new Date().toISOString() });
     },
   });
 
@@ -105,7 +106,7 @@ export async function runScan(
     try {
       const result = await fn();
       stageDurations[stage] = Date.now() - t0;
-      emit({ type: "stage_completed", stage, at: new Date().toISOString() });
+      emit({ type: "stage_completed", stage, at: new Date().toISOString(), durationMs: stageDurations[stage] });
       return result;
     } catch (e) {
       stageDurations[stage] = Date.now() - t0;
@@ -143,6 +144,7 @@ export async function runScan(
       }),
     );
 
+    const authenticatedApiRoutes: Array<{ route: ApiSpecRoute; exchange: HttpExchange }> = [];
     await runStage("endpoint_discovery", async () => {
       // Probe well-known sensitive paths per discovered host, within budget.
       const hosts = new Set(config.targetBaseUrls.map((u) => new URL(u).origin));
@@ -158,6 +160,38 @@ export async function runScan(
           }
         }
       }
+
+      const apiRoutes = discoverApiSpecGetRoutes(allExchanges, config.scope, limits.maxPages);
+      let discovered = 0;
+      for (const route of apiRoutes) {
+        checkCancelled();
+        try {
+          const exchange = await client.get(route.url, "endpoint_discovery");
+          discovered++;
+          const parsed = new URL(route.url);
+          emit({
+            type: "endpoint_discovered",
+            endpoint: {
+              url: route.url,
+              methodsObserved: ["GET"],
+              statusCodesObserved: [exchange.response.status],
+              queryParams: Array.from(parsed.searchParams.keys()),
+              formFields: [],
+              requiresAuth: exchange.response.status === 401 || exchange.response.status === 403,
+              sourceType: "openapi",
+              contentType: exchange.response.headers["content-type"],
+            },
+            at: new Date().toISOString(),
+          });
+          if (route.securityDeclared) authenticatedApiRoutes.push({ route, exchange });
+        } catch (e) {
+          if (e instanceof BudgetExceededError) break;
+          if (!(e instanceof ScopeViolationError)) {
+            emit({ type: "scan_log", level: "warn", message: `Could not inspect documented GET route ${route.url}: ${(e as Error).message}`, at: new Date().toISOString() });
+          }
+        }
+      }
+      emit({ type: "scan_log", level: "info", message: `OpenAPI discovery inspected ${discovered} in-scope GET route(s) from published API specifications.`, at: new Date().toISOString() });
     });
 
     // 5. Technology identification
@@ -197,31 +231,44 @@ export async function runScan(
       }
     });
 
-    // 7. Auth/session analysis — Phase 2 capability. Documented interface:
-    // when config.authContext is present, a future AuthenticationScanner /
-    // SessionScanner pair will compare authenticated vs anonymous
-    // responses here. Phase 1 intentionally does not claim results it
-    // cannot yet produce.
+    // 7. Compare owner-provided test-role access with anonymous access to
+    // API routes whose published specification declares authentication.
     await runStage("auth_session_analysis", async () => {
       if (!config.authContext) {
         emit({
           type: "scan_log",
           level: "info",
-          message: "No authentication configured for this scan; authenticated-session analysis skipped.",
+          message: "No owner-provided test role configured; authenticated-versus-anonymous API checks skipped.",
           at: new Date().toISOString(),
         });
       } else {
+        if (!config.scope.activeTestingAllowed) {
+          emit({ type: "scan_log", level: "info", message: "Authenticated API comparison skipped because active testing is disabled in the authorized scope.", at: new Date().toISOString() });
+          return;
+        }
+        let compared = 0;
+        for (const { route, exchange } of authenticatedApiRoutes) {
+          if (!config.authContext || !route.securityDeclared) continue;
+          checkCancelled();
+          try {
+            const anonymous = await client.request("GET", route.url, "auth_session_analysis", { anonymous: true });
+            compared++;
+            rawObservations.push(...compareAnonymousAccess(exchange, anonymous));
+          } catch (e) {
+            if (e instanceof BudgetExceededError) break;
+          }
+        }
         emit({
           type: "scan_log",
           level: "info",
-          message: "Authenticated context present. Role-comparison authorization testing is a Phase 2 capability and did not run in this scan.",
+          message: `Compared ${compared} documented protected API GET route(s) using the supplied test role and an anonymous request.`,
           at: new Date().toISOString(),
         });
       }
     });
 
     // 8. Active security tests — gated on scope.activeTestingAllowed.
-    // Phase 2: injection, authorization/IDOR, authentication/session checks.
+    // Injection, authorization/IDOR, and non-credential session checks.
     await runStage("active_testing", async () => {
       if (!config.scope.activeTestingAllowed) {
         emit({

@@ -11,6 +11,7 @@ import { prisma } from "../lib/prisma.js";
 import { decryptSecret } from "../lib/crypto.js";
 import { scanEventBus } from "./eventBus.js";
 import { recordAuditEvent } from "./auditLog.js";
+import { ScanSessionLogger } from "./scanSessionLog.js";
 
 const activeHandles = new Map<string, EngineHandle>();
 
@@ -20,7 +21,6 @@ export function cancelScan(scanId: string): boolean {
   handle.cancel();
   return true;
 }
-
 export async function executeScan(scanId: string): Promise<void> {
   const scan = await prisma.scan.findUniqueOrThrow({
     where: { id: scanId },
@@ -31,7 +31,10 @@ export async function executeScan(scanId: string): Promise<void> {
     },
   });
 
-  await prisma.scan.update({ where: { id: scanId }, data: { status: "RUNNING", startedAt: new Date() } });
+  const startedAt = new Date();
+  await prisma.scan.update({ where: { id: scanId }, data: { status: "RUNNING", startedAt } });
+  const sessionLogger = new ScanSessionLogger(scanId, startedAt);
+  await sessionLogger.initialize().catch((err) => console.error("Unable to initialize scan session log:", err));
 
   const scope: AuthorizationScope = {
     allowedHosts: scan.scopeVersion.allowedHosts,
@@ -78,10 +81,14 @@ export async function executeScan(scanId: string): Promise<void> {
       },
       (event) => {
         scanEventBus.publish(scanId, event);
-        void persistEvent(scanId, scan.projectId, event);
+        sessionLogger.append(event);
+        void persistEvent(scanId, scan.projectId, event).catch((err) => {
+          console.error(`Unable to persist scan event for ${scanId}:`, err);
+        });
       },
       handle,
     );
+    await sessionLogger.flush();
 
     await prisma.scan.update({
       where: { id: scanId },
@@ -120,7 +127,10 @@ export async function executeScan(scanId: string): Promise<void> {
       where: { id: scanId },
       data: { status: "FAILED", completedAt: new Date(), failureReason: (err as Error).message },
     });
-    scanEventBus.publish(scanId, { type: "scan_failed", at: new Date().toISOString(), reason: (err as Error).message });
+    const failedEvent = { type: "scan_failed" as const, at: new Date().toISOString(), reason: (err as Error).message };
+    scanEventBus.publish(scanId, failedEvent);
+    sessionLogger.append(failedEvent);
+    await sessionLogger.flush();
     await recordAuditEvent({
       organizationId: scan.project.organizationId,
       projectId: scan.projectId,
@@ -131,6 +141,7 @@ export async function executeScan(scanId: string): Promise<void> {
       metadata: { reason: (err as Error).message },
     });
   } finally {
+    await sessionLogger.flush();
     activeHandles.delete(scanId);
   }
 }
@@ -141,7 +152,7 @@ async function persistEvent(scanId: string, projectId: string, event: ScanEvent)
       await prisma.scanStageEvent.create({ data: { scanId, stage: event.stage, status: "started" } });
       break;
     case "stage_completed":
-      await prisma.scanStageEvent.create({ data: { scanId, stage: event.stage, status: "completed", summary: event.summary } });
+      await prisma.scanStageEvent.create({ data: { scanId, stage: event.stage, status: "completed", summary: event.summary ?? (event.durationMs === undefined ? undefined : `Completed in ${event.durationMs}ms`) } });
       break;
     case "endpoint_discovered":
       await prisma.discoveredEndpointRecord.create({
@@ -195,9 +206,4 @@ async function persistEvent(scanId: string, projectId: string, event: ScanEvent)
     default:
       break;
   }
-}
-
-// typing helper only
-async function noop() {
-  return {} as import("@hacker/scanner-core").ScanEvent;
 }

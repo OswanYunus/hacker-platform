@@ -18,6 +18,12 @@ interface ScanSummary {
   triggeredBy: { name: string };
 }
 
+interface AuthProfile {
+  id: string;
+  roleLabel: string;
+  mechanism: string;
+}
+
 const PROFILE_DESCRIPTIONS: Record<string, string> = {
   QUICK: "Fast passive checks, ~25 pages. Good for a sanity check before a deeper run.",
   STANDARD: "Normal assessment depth, ~100 pages.",
@@ -39,6 +45,8 @@ export default function ScansPage() {
   const nav = projectNavItems(params.projectId);
   const [scans, setScans] = useState<ScanSummary[]>([]);
   const [profile, setProfile] = useState("STANDARD");
+  const [authProfiles, setAuthProfiles] = useState<AuthProfile[]>([]);
+  const [authConfigId, setAuthConfigId] = useState("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -48,13 +56,21 @@ export default function ScansPage() {
   function reload() {
     api.get<{ scans: ScanSummary[] }>(`/api/projects/${params.projectId}/scans`).then((r) => setScans(r.scans));
   }
-  useEffect(reload, [params.projectId]);
+  useEffect(() => {
+    reload();
+    api.get<{ project: { authConfigs: AuthProfile[] } }>(`/api/projects/${params.projectId}`)
+      .then((r) => setAuthProfiles(r.project.authConfigs))
+      .catch(() => setAuthProfiles([]));
+  }, [params.projectId]);
 
   async function startScan() {
     setStarting(true);
     setError(null);
     try {
-      const { scan } = await api.post<{ scan: { id: string } }>(`/api/projects/${params.projectId}/scans`, { profile });
+      const { scan } = await api.post<{ scan: { id: string } }>(`/api/projects/${params.projectId}/scans`, {
+        profile,
+        ...(authConfigId ? { authConfigId } : {}),
+      });
       router.push(`/projects/${params.projectId}/scans/${scan.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start scan.");
@@ -129,6 +145,14 @@ export default function ScansPage() {
               </select>
             </Field>
             <p className="text-xs text-ink-600">{PROFILE_DESCRIPTIONS[profile]}</p>
+            <Field label="Authorized test role" hint="Optional. Select a dedicated owner-provided role to compare protected API routes with anonymous access.">
+              <select className={inputClass} value={authConfigId} onChange={(e) => setAuthConfigId(e.target.value)}>
+                <option value="">Unauthenticated scan</option>
+                {authProfiles.map((auth) => (
+                  <option key={auth.id} value={auth.id}>{auth.roleLabel} · {auth.mechanism}</option>
+                ))}
+              </select>
+            </Field>
             {error && <p className="text-xs text-[#A4221B]">{error}</p>}
             <Button onClick={startScan} disabled={starting}>
               {starting ? "Starting…" : "Start scan"}

@@ -29,7 +29,7 @@ services:
       dockerfile: Dockerfile.api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://hacker:${POSTGRES_PASSWORD:?Run with --env-file .env.docker}@postgres:5432/hacker?schema=public
+      DATABASE_URL: ${DATABASE_URL:-postgresql://hacker:${POSTGRES_PASSWORD:?Run with --env-file .env.docker}@postgres:5432/hacker?schema=public}
       JWT_SECRET: ${JWT_SECRET:?Run with --env-file .env.docker}
       MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Run with --env-file .env.docker}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
@@ -39,12 +39,15 @@ services:
       PORT: 4000
       NODE_ENV: production
       LOG_LEVEL: info
+      SCAN_LOG_DIR: /app/data/scan-logs
       SCAN_WORKER_CONCURRENCY: 2
     depends_on:
       postgres:
         condition: service_healthy
     expose:
       - "4000"
+    volumes:
+      - hacker_scan_logs:/app/data/scan-logs
 
   web:
     build:
@@ -58,3 +61,4 @@ services:
 
 volumes:
   hacker_postgres_data:
+  hacker_scan_logs:

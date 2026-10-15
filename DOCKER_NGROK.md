@@ -1,8 +1,9 @@
 # Run the app with Docker and ngrok
 
 This runs the app on your PC and gives it a public ngrok URL. Your PC, Docker
-Desktop, and ngrok must stay running while people use that URL. Postgres data is
-kept in a Docker volume. The API and database are not published to the internet.
+Desktop, and ngrok must stay running while people use that URL. Postgres data and
+per-scan session logs are kept in Docker volumes. The API and database are not
+published to the internet.
 
 ## 1. Start Docker Desktop
 
@@ -35,6 +36,11 @@ Check status with:
 docker compose --env-file .env.docker -f infra/docker-compose.yml ps
 docker compose --env-file .env.docker -f infra/docker-compose.yml logs -f api
 ```
+
+The compose file accepts an optional `DATABASE_URL` in `.env.docker`. Leave it
+unset to use the bundled Postgres container. Set it only when you intentionally
+want to reuse an existing database reachable from Docker; the app applies any
+pending Prisma migrations when it starts.
 
 ## 4. Start the public tunnel
 
@@ -73,6 +79,17 @@ docker compose --env-file .env.docker -f infra/docker-compose.yml up -d --force-
 Reset tokens are single-use, expire after 30 minutes, and are stored only as
 SHA-256 hashes. Until email is configured, the reset form will explain that
 recovery is unavailable on this deployment.
+
+## Scan sessions and logs
+
+Each scan writes timestamped JSON Lines events under its own session folder in
+the `hacker_scan_logs` Docker volume. The live scan page shows timestamped
+request, stage, technology, and finding entries. After a scan, choose **Download
+session log** to save the complete session log. The scanner also reads published
+OpenAPI/Swagger JSON and inspects only in-scope documented GET routes. If active
+testing is authorized and an owner-provided test role is configured, it compares
+documented protected routes with anonymous GET requests; it does not submit
+credentials or guess passwords.
 
 ## Stop and resume
 
