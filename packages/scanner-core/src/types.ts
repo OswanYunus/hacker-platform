@@ -28,8 +28,8 @@ export interface AuthorizationScope {
   /** URL path prefixes that must never be requested, even if the host
    * matches (e.g. "/billing", "/api/internal"). Excludes always win. */
   excludedPaths?: string[];
-  /** Whether active (state-changing / exploit-attempt) testing is
-   * permitted at all. If false, only passive/discovery stages run. */
+  /** Whether bounded active security checks are permitted. Scanner HTTP
+   * requests remain read-only (GET, HEAD, OPTIONS) in every environment. */
   activeTestingAllowed: boolean;
   /** Max requests per second the scanner may issue against this target. */
   maxRequestsPerSecond: number;

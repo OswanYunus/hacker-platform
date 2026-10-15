@@ -7,11 +7,7 @@
  *  - UUID IDOR: swap UUIDs from one session with another to confirm
  *    object-level auth enforcement.
  *  - Privilege escalation via direct URL access: request admin/privileged
- *    paths without appropriate role/session.
- *  - HTTP verb tampering: send DELETE/PUT/PATCH on endpoints that only
- *    exposed GET in the crawler to find implicit method allow-lists.
- *  - Mass assignment probe: inject extra privileged fields (role, isAdmin)
- *    in JSON bodies and look for 200 OK accepting them.
+ *    paths without an appropriate role/session.
  *
  * All findings are set to confidence "medium" unless we can confirm the
  * response is different from the baseline (i.e. we actually get a 200 with
@@ -218,124 +214,6 @@ export async function checkPrivilegedPathAccess(
               ],
             }),
           );
-        }
-      }
-    } catch {
-      // non-fatal
-    }
-  }
-
-  return observations;
-}
-
-/**
- * HTTP verb tampering: if only GET was observed, try DELETE/PUT on the same
- * URL. A 200 or 204 instead of 405 indicates the server may accept
- * state-changing methods without proper checks.
- */
-export async function checkVerbTampering(
-  client: ScannerHttpClient,
-  endpoint: DiscoveredEndpoint,
-): Promise<RawObservation[]> {
-  if (!endpoint.url.startsWith("http")) return [];
-  if (endpoint.methodsObserved.length > 1) return []; // already multi-method — skip
-  if (!endpoint.methodsObserved.includes("GET")) return [];
-  const observations: RawObservation[] = [];
-
-  for (const method of ["DELETE", "PUT", "PATCH"]) {
-    try {
-      const ex = await client.request(method, endpoint.url, STAGE, { body: "{}" });
-      if (ex.response.status === 200 || ex.response.status === 204) {
-        observations.push(
-          makeObs(endpoint.url, endpoint.url, {
-            ruleId: "verb-tampering",
-            title: `HTTP Verb Tampering — ${method} accepted on GET-only endpoint`,
-            severity: "high",
-            confidence: "medium",
-            cwe: "CWE-650",
-            owaspCategory: "OWASP A01:2021 — Broken Access Control",
-            rootCause:
-              `The endpoint '${endpoint.url}' was only observed to serve GET. An unexpected ${method} request ` +
-              `returned HTTP ${ex.response.status}, suggesting the server did not enforce a method allow-list.`,
-            impact:
-              "An attacker can delete or overwrite resources using an HTTP method the application's own " +
-              "access controls did not anticipate.",
-            remediation:
-              "Explicitly define allowed HTTP methods at the route level. Return 405 Method Not Allowed " +
-              "for all others and enforce the same authorization checks regardless of HTTP method.",
-            references: [
-              "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/11-Testing_for_HTTP_Methods",
-            ],
-          }),
-        );
-        break;
-      }
-    } catch {
-      // non-fatal
-    }
-  }
-
-  return observations;
-}
-
-/**
- * Mass-assignment probe: POST/PATCH with extra privileged fields and look
- * for them being accepted (200 with no 422/403 for extra fields).
- */
-export async function checkMassAssignment(
-  client: ScannerHttpClient,
-  endpoint: DiscoveredEndpoint,
-): Promise<RawObservation[]> {
-  if (!endpoint.url.startsWith("http")) return [];
-  if (!endpoint.methodsObserved.some((m) => ["POST", "PUT", "PATCH"].includes(m))) return [];
-  const observations: RawObservation[] = [];
-
-  const payloads = [
-    { role: "admin" },
-    { isAdmin: true },
-    { is_admin: true },
-    { admin: true },
-    { privilege: "admin" },
-    { permissions: ["admin", "super"] },
-  ];
-
-  for (const payload of payloads) {
-    const body = JSON.stringify(payload);
-    const method = endpoint.methodsObserved.find((m) => ["POST", "PATCH", "PUT"].includes(m)) ?? "POST";
-    try {
-      const ex = await client.request(method, endpoint.url, STAGE, {
-        body,
-        headers: { "Content-Type": "application/json" },
-      });
-      if (ex.response.status === 200 || ex.response.status === 201) {
-        const resBody = ex.response.body ?? ex.response.bodyPreview ?? "";
-        // Heuristic: if any of our injected field names appear in the response, it may have been accepted
-        const accepted = Object.keys(payload).some((k) => resBody.includes(k));
-        if (accepted) {
-          observations.push(
-            makeObs(endpoint.url, endpoint.url, {
-              ruleId: "mass-assignment",
-              title: "Mass Assignment — Privileged Field Accepted in Request Body",
-              severity: "high",
-              confidence: "medium",
-              cwe: "CWE-915",
-              owaspCategory: "OWASP A08:2021 — Software and Data Integrity Failures",
-              rootCause:
-                `A ${method} to '${endpoint.url}' with body ${body} returned HTTP ${ex.response.status} ` +
-                `and the response contains the injected field name, suggesting the server bound the value.`,
-              impact:
-                "An attacker can escalate their own privileges (e.g. set role=admin) or manipulate " +
-                "sensitive model attributes by sending additional fields in the request body.",
-              remediation:
-                "Use an explicit allow-list (DTO) of permitted request fields on every endpoint. " +
-                "Never bind request bodies directly to database models without filtering.",
-              references: [
-                "https://owasp.org/API-Security/editions/2023/en/0xa6-unrestricted-access-to-sensitive-business-flows/",
-                "https://cheatsheetseries.owasp.org/cheatsheets/Mass_Assignment_Cheat_Sheet.html",
-              ],
-            }),
-          );
-          break;
         }
       }
     } catch {

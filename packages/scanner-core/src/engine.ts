@@ -15,8 +15,6 @@ import {
 import {
   checkSequentialIdor,
   checkPrivilegedPathAccess,
-  checkVerbTampering,
-  checkMassAssignment,
 } from "./checks/authorization.js";
 import {
   checkSessionTokenEntropy,
@@ -312,8 +310,6 @@ export async function runScan(
         rawObservations.push(
           ...(await checkPrivilegedPathAccess(client, endpoint)),
           ...(await checkSequentialIdor(client, endpoint)),
-          ...(await checkVerbTampering(client, endpoint)),
-          ...(await checkMassAssignment(client, endpoint)),
         );
 
         // Injection probes

@@ -88,8 +88,9 @@ request, stage, technology, and finding entries. After a scan, choose **Download
 session log** to save the complete session log. The scanner also reads published
 OpenAPI/Swagger JSON and inspects only in-scope documented GET routes. If active
 testing is authorized and an owner-provided test role is configured, it compares
-documented protected routes with anonymous GET requests; it does not submit
-credentials or guess passwords.
+documented protected routes with anonymous GET requests. The shared HTTP client
+allows only GET, HEAD, and OPTIONS; it does not submit form credentials, guess
+passwords, or send write methods.
 
 ## Stop and resume
 

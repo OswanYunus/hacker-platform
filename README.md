@@ -50,48 +50,27 @@ Register an account at `localhost:3000/register`, create a project, define
 scope (this is required — a scan cannot start without it), add a target,
 and start a Quick scan.
 
-### A note on this build environment
+## Current scan coverage and limits
 
-This was built in a sandboxed environment with no general internet access
-(only the npm registry and a few package hosts were reachable). Two
-concrete consequences:
+The scanner crawls in-scope pages, fingerprints technologies, checks common
+security headers and cookies, looks for exposed files and client-side secrets,
+reviews public privacy/terms/security-contact pages, reads published OpenAPI
+specifications, and checks documented protected GET routes with an owner-
+provided test role and an anonymous request. When active testing is authorized,
+it runs bounded GET probes for injection indicators, path traversal, redirects,
+privileged paths, and ID-based access-control issues. Results include evidence
+and confidence levels; a scanner signal still needs human validation.
 
-- **`scanner-core` and `apps/api`'s non-Prisma code, and `apps/web`, were
-  fully installed, typechecked, unit-tested, and built here** — the numbers
-  in the test output are real. `scanner-core` has 31 passing tests covering
-  scope/SSRF validation, every passive check, correlation, and risk
-  scoring; `apps/api` has 7 passing tests covering crypto and auth helpers;
-  `apps/web` builds cleanly with `next build`.
-- **Prisma's `generate`/`migrate` could not run here** (they fetch engine
-  binaries from `binaries.prisma.sh`, which wasn't reachable). The schema
-  was hand-reviewed against every query in `apps/api/src/routes` and
-  `services`, but run `npm run prisma:generate` on your machine and skim
-  `tsc --noEmit` once more before trusting it blindly — that's the one
-  layer I couldn't close the loop on myself.
+Every target request passes through the scope, DNS/SSRF, rate, duration, and
+request-budget checks. The shared HTTP client allows only GET, HEAD, and OPTIONS.
+It never submits credentials, guesses passwords, or sends write methods. Scan
+events are timestamped and stored by session, and authorization/scope changes
+are recorded in the audit trail.
 
-## What's real vs. what's a documented interface
+This is an automated web/API assessment tool, not a replacement for a skilled
+penetration test. It does not test business logic comprehensively, prove legal
+or policy compliance, audit source code or cloud configuration, or prevent
+ransomware. Target ownership and requester employment verification are also
+not yet built; use it only for systems you are authorized to assess.
 
-Per the engineering brief: no placeholder soup, no fake scan results. A
-scan today genuinely crawls the target, fingerprints technology, and runs
-real passive checks (security headers, cookie flags, CORS, info
-disclosure, exposed sensitive files, unsafe caching, client-side secret
-patterns) — nothing in a report is fabricated.
-
-What's **not** implemented yet, and says so explicitly in the UI/API
-rather than faking it:
-
-- **Active testing modules** (injection, IDOR, authz probing, business
-  logic) — the `active_testing` stage runs and logs that it's a no-op when
-  scope permits active testing, rather than returning invented findings.
-- **PDF reports** — the report endpoint returns `501` for `format=pdf`
-  with a clear message; JSON, Markdown, and CSV are fully implemented.
-- **Authenticated role-comparison scanning** (anonymous vs. user vs. admin)
-  — auth config/secrets are stored and passed to the engine, but the
-  comparison logic itself is a Phase 2 module.
-- **The Redis-backed production queue** — documented in
-  `apps/api/src/services/queue.redis.md` with the exact BullMQ shape to
-  drop in; not wired by default because this environment had no Redis to
-  test it against. The default `InMemoryScanQueue` works today for local
-  dev and small deployments.
-
-See `docs/roadmap.md` for the full phase breakdown.
+See [`docs/roadmap.md`](docs/roadmap.md) for the next product milestones.

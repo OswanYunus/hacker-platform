@@ -102,6 +102,12 @@ export class ScannerHttpClient {
     stage: ScanStage,
     init?: { headers?: Record<string, string>; body?: string; maxRedirects?: number; anonymous?: boolean },
   ): Promise<HttpExchange> {
+    const normalizedMethod = method.toUpperCase();
+    if (!["GET", "HEAD", "OPTIONS"].includes(normalizedMethod)) {
+      throw new ScopeViolationError(
+        `HTTP ${normalizedMethod} is blocked by the scanner's read-only request policy`,
+      );
+    }
     this.checkBudgets();
 
     const maxRedirects = init?.maxRedirects ?? 5;
@@ -124,7 +130,7 @@ export class ScannerHttpClient {
       const start = Date.now();
       const headers = this.buildHeaders(init?.headers, init?.anonymous);
       const res = await fetch(currentUrl, {
-        method,
+        method: normalizedMethod,
         headers,
         body: init?.body,
         redirect: "manual",
