@@ -35,7 +35,9 @@ export function buildServer() {
   });
 
   app.register(cors, {
-    origin: (process.env.WEB_ORIGIN ?? "http://localhost:3000").split(","),
+    origin: (process.env.WEB_ORIGIN ?? "http://localhost:3000")
+      .split(",")
+      .map((origin) => (origin.includes("://") ? origin : `https://${origin}`)),
     credentials: true,
   });
 
