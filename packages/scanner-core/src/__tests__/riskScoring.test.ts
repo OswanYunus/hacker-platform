@@ -25,9 +25,9 @@ function finding(overrides: Partial<Finding>): Finding {
 }
 
 describe("riskScore", () => {
-  it("scores a confirmed critical finding at the top of the range", () => {
-    const score = riskScore(finding({ severity: "critical", confidence: "confirmed", verification: "confirmed" }));
-    expect(score).toBe(100);
+  it("scores an independently verified critical finding at the top of the range", () => {
+    const score = riskScore(finding({ severity: "critical", confidence: "high", verification: "independently_verified" }));
+    expect(score).toBe(85);
   });
 
   it("scores a false positive at zero regardless of severity", () => {
@@ -36,8 +36,8 @@ describe("riskScore", () => {
   });
 
   it("ranks a high-confidence medium above a low-confidence high in close cases", () => {
-    const highConfMedium = riskScore(finding({ severity: "medium", confidence: "confirmed", verification: "confirmed" }));
-    const lowConfHigh = riskScore(finding({ severity: "high", confidence: "low", verification: "unverified" }));
+    const highConfMedium = riskScore(finding({ severity: "medium", confidence: "high", verification: "evidence_supported" }));
+    const lowConfHigh = riskScore(finding({ severity: "high", confidence: "low", verification: "suspected" }));
     expect(highConfMedium).toBeGreaterThan(lowConfHigh);
   });
 });

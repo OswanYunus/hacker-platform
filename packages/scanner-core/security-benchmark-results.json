@@ -1,0 +1,293 @@
+{
+  "benchmark": "synthetic-injection-validator-fixtures",
+  "generatedAt": "2026-10-16T12:38:10.336Z",
+  "transport": "deterministic in-process fixture; no network requests",
+  "groundTruth": "one vulnerable and one safe synthetic response fixture per family; 3 repetitions per fixture",
+  "results": [
+    {
+      "family": "sqli",
+      "fixtureCount": 2,
+      "repetitions": 3,
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "repeatability": 1,
+      "totalRequests": 36,
+      "totalRuntimeMs": 1.94,
+      "runs": [
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "sqli-error-based",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 12,
+          "runtimeMs": 1.69
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "sqli-error-based",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 12,
+          "runtimeMs": 0.14
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "sqli-error-based",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 12,
+          "runtimeMs": 0.11
+        }
+      ]
+    },
+    {
+      "family": "reflected-xss",
+      "fixtureCount": 2,
+      "repetitions": 3,
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "repeatability": 1,
+      "totalRequests": 12,
+      "totalRuntimeMs": 8.25,
+      "runs": [
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "reflected-xss",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 4,
+          "runtimeMs": 6.72
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "reflected-xss",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 4,
+          "runtimeMs": 0.81
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "reflected-xss",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 4,
+          "runtimeMs": 0.72
+        }
+      ]
+    },
+    {
+      "family": "path-traversal",
+      "fixtureCount": 2,
+      "repetitions": 3,
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "repeatability": 1,
+      "totalRequests": 18,
+      "totalRuntimeMs": 0.53,
+      "runs": [
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "path-traversal",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 6,
+          "runtimeMs": 0.39
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "path-traversal",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 6,
+          "runtimeMs": 0.07
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "path-traversal",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 6,
+          "runtimeMs": 0.07
+        }
+      ]
+    },
+    {
+      "family": "ssti",
+      "fixtureCount": 2,
+      "repetitions": 3,
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "repeatability": 1,
+      "totalRequests": 15,
+      "totalRuntimeMs": 0.25,
+      "runs": [
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "ssti",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 5,
+          "runtimeMs": 0.17
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "ssti",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 5,
+          "runtimeMs": 0.04
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "ssti",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 5,
+          "runtimeMs": 0.04
+        }
+      ]
+    },
+    {
+      "family": "open-redirect",
+      "fixtureCount": 2,
+      "repetitions": 3,
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "repeatability": 1,
+      "totalRequests": 69,
+      "totalRuntimeMs": 0.79,
+      "runs": [
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "open-redirect",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 23,
+          "runtimeMs": 0.41
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "open-redirect",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 23,
+          "runtimeMs": 0.22
+        },
+        {
+          "expected": 1,
+          "detected": 1,
+          "falsePositives": 0,
+          "findings": [
+            {
+              "ruleId": "open-redirect",
+              "confidence": "high",
+              "verification": "likely"
+            }
+          ],
+          "requests": 23,
+          "runtimeMs": 0.16
+        }
+      ]
+    }
+  ]
+}

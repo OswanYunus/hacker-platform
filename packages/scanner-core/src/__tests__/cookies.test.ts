@@ -15,6 +15,20 @@ describe("checkCookies", () => {
     expect(secure?.severity).toBe("high");
   });
 
+  it("redacts cookie values from every finding evidence item", () => {
+    const canary = "live-session-canary-9f31";
+    const ex = mockExchange({
+      url: "https://example.com/login",
+      responseHeaders: { "set-cookie": `sessionid=${canary}; Path=/; SameSite=None` },
+    });
+    const findings = checkCookies(ex);
+
+    expect(findings.length).toBeGreaterThan(0);
+    expect(JSON.stringify(findings)).not.toContain(canary);
+    expect(JSON.stringify(findings)).toContain("sessionid=[REDACTED]");
+    expect(JSON.stringify(findings)).toContain("SameSite=None");
+  });
+
   it("does not flag a cookie that already has Secure, HttpOnly, and SameSite", () => {
     const ex = mockExchange({
       url: "https://example.com/login",

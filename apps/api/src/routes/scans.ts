@@ -3,12 +3,13 @@ import { prisma } from "../lib/prisma.js";
 import { createScanSchema } from "../lib/schemas.js";
 import { requireProjectAccess } from "../plugins/authPlugin.js";
 import { recordAuditEvent } from "../services/auditLog.js";
-import { scanQueue } from "../services/scanQueue.js";
+import { requestScanCancellation, scanQueue } from "../services/scanQueue.js";
 import { cancelScan } from "../services/scanOrchestrator.js";
 import { scanEventBus } from "../services/eventBus.js";
 import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { removeScanSessionLog, scanSessionLogPath } from "../services/scanSessionLog.js";
+import { canSkipDnsVerificationForTarget, hasValidDnsChallenge, targetHostname, targetsCoverAllowedHosts } from "../services/targetVerification.js";
 
 export default async function scanRoutes(app: FastifyInstance) {
   app.post("/api/projects/:projectId/scans", async (req, reply) => {
@@ -21,13 +22,100 @@ export default async function scanRoutes(app: FastifyInstance) {
     const parsed = createScanSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
 
+    if (parsed.data.authConfigId) {
+      const authConfig = await prisma.authenticationConfig.findFirst({
+        where: { id: parsed.data.authConfigId, projectId },
+        select: { id: true },
+      });
+      if (!authConfig) {
+        return reply.code(400).send({ error: "Authentication config was not found in this project." });
+      }
+    }
+
     const scopeVersion = await prisma.scopeVersion.findFirst({ where: { projectId, isActive: true } });
     if (!scopeVersion) {
       return reply.code(400).send({ error: "This project has no authorized scope configured yet. Define scope before starting a scan." });
     }
-    const targetCount = await prisma.target.count({ where: { projectId } });
-    if (targetCount === 0) {
+    const targets = await prisma.target.findMany({ where: { projectId } });
+    if (targets.length === 0) {
       return reply.code(400).send({ error: "Add at least one target before starting a scan." });
+    }
+
+    const activeRequest = scopeVersion.activeTestingAllowed || parsed.data.profile === "DEEP";
+    const verifiedTargetProofs: Array<{ targetId: string; hostname: string; recordName: string; checkedAt: string }> = [];
+    const exemptedDnsProofHosts: string[] = [];
+    if (parsed.data.profile === "DEEP" && !scopeVersion.activeTestingAllowed) {
+      return reply.code(400).send({ error: "Deep scans require active testing to be explicitly authorized in the current scope." });
+    }
+    if (activeRequest && access.membership.role !== "OWNER" && access.membership.role !== "ADMIN") {
+      await recordAuditEvent({
+        organizationId: access.project.organizationId,
+        projectId,
+        actorId: req.currentUser!.id,
+        action: "scan.blocked",
+        targetType: "Project",
+        targetId: projectId,
+        metadata: { profile: parsed.data.profile, reason: "owner_or_admin_required", scopeVersionId: scopeVersion.id },
+        ipAddress: req.ip,
+      });
+      return reply.code(403).send({ error: "Only organization owners/admins can start active or deep scans." });
+    }
+
+    const statement = scopeVersion.authorizationStatement?.trim();
+    if (!statement || statement.length < 20) {
+      return reply.code(409).send({ error: "Scans require a recorded authorization statement in the current scope." });
+    }
+
+    {
+      const { targets: verifiedTargets, unmatchedHosts } = targetsCoverAllowedHosts(scopeVersion.allowedHosts, targets);
+      if (unmatchedHosts.length > 0) {
+        await recordAuditEvent({
+          organizationId: access.project.organizationId,
+          projectId,
+          actorId: req.currentUser!.id,
+          action: "scan.blocked",
+          targetType: "Project",
+          targetId: projectId,
+          metadata: { profile: parsed.data.profile, reason: "scope_host_has_no_dns_verified_target", hosts: unmatchedHosts, scopeVersionId: scopeVersion.id },
+          ipAddress: req.ip,
+        });
+        return reply.code(409).send({ error: `Add a DNS-verifiable target matching every authorized host before scanning: ${unmatchedHosts.join(", ")}.` });
+      }
+
+      const invalidTargets: string[] = [];
+      for (const target of verifiedTargets) {
+        const hostname = targetHostname(target);
+        if (canSkipDnsVerificationForTarget(hostname, scopeVersion.allowedHosts)) {
+          exemptedDnsProofHosts.push(hostname);
+          continue;
+        }
+        if (!(await hasValidDnsChallenge(target))) {
+          invalidTargets.push(hostname);
+          await prisma.target.update({ where: { id: target.id }, data: { verifiedAt: null } });
+        } else {
+          const checkedAt = new Date();
+          await prisma.target.update({ where: { id: target.id }, data: { verifiedAt: checkedAt } });
+          verifiedTargetProofs.push({
+            targetId: target.id,
+            hostname,
+            recordName: target.verificationRecordName!,
+            checkedAt: checkedAt.toISOString(),
+          });
+        }
+      }
+      if (invalidTargets.length > 0) {
+        await recordAuditEvent({
+          organizationId: access.project.organizationId,
+          projectId,
+          actorId: req.currentUser!.id,
+          action: "scan.blocked",
+          targetType: "Project",
+          targetId: projectId,
+          metadata: { profile: parsed.data.profile, reason: "live_dns_control_check_failed", targets: invalidTargets, scopeVersionId: scopeVersion.id },
+          ipAddress: req.ip,
+        });
+        return reply.code(409).send({ error: `Scans are blocked until live DNS control is verified for: ${invalidTargets.join(", ")}.` });
+      }
     }
 
     const scan = await prisma.scan.create({
@@ -49,7 +137,23 @@ export default async function scanRoutes(app: FastifyInstance) {
       action: "scan.started",
       targetType: "Scan",
       targetId: scan.id,
-      metadata: { profile: scan.profile, scopeVersionId: scopeVersion.id, triggerSource: scan.triggerSource },
+      metadata: {
+        profile: scan.profile,
+        scopeVersionId: scopeVersion.id,
+        triggerSource: scan.triggerSource,
+        targets: targets.map((target: any) => {
+          try {
+            return targetHostname(target);
+          } catch {
+            return "non-dns-target";
+          }
+        }),
+        authorizedHosts: scopeVersion.allowedHosts,
+        environment: scopeVersion.environment,
+        activeTestingAllowed: scopeVersion.activeTestingAllowed,
+        domainControlProofs: verifiedTargetProofs,
+        domainControlProofsSkippedFor: exemptedDnsProofHosts,
+      },
       ipAddress: req.ip,
     });
 
@@ -87,8 +191,9 @@ export default async function scanRoutes(app: FastifyInstance) {
     if (!scan) return reply.code(404).send({ error: "Scan not found" });
     const access = await requireProjectAccess(req, reply, scan.projectId);
     if (!access) return;
-    const cancelled = cancelScan(scanId);
-    if (!cancelled) return reply.code(409).send({ error: "Scan is not currently running" });
+    const cancellationAccepted = await requestScanCancellation(scanId);
+    if (!cancellationAccepted) return reply.code(409).send({ error: "Scan is not queued or running" });
+    cancelScan(scanId); // Fast local abort; the persisted request covers other workers/restarts.
     await recordAuditEvent({
       organizationId: access.project.organizationId,
       projectId: scan.projectId,
@@ -112,7 +217,11 @@ export default async function scanRoutes(app: FastifyInstance) {
     }
 
     if (scan.status === "RUNNING" || scan.status === "QUEUED") {
+      await requestScanCancellation(scanId);
       cancelScan(scanId);
+      if (scan.status === "RUNNING") {
+        return reply.code(409).send({ error: "Cancellation requested. Delete the scan after it reaches a terminal state." });
+      }
     }
 
     await prisma.technologyRecord.deleteMany({ where: { scanId } });
@@ -142,9 +251,12 @@ export default async function scanRoutes(app: FastifyInstance) {
 
     const { status } = req.query as { status?: string };
     const whereClause: any = { projectId };
+    if (status === "RUNNING" || status === "QUEUED") {
+      return reply.code(409).send({ error: "Cancel active scans individually and wait for a terminal state before clearing them." });
+    }
     if (status && status !== "ALL") {
       whereClause.status = status;
-    } else if (!status) {
+    } else {
       whereClause.status = { in: ["COMPLETED", "FAILED", "CANCELLED"] };
     }
 

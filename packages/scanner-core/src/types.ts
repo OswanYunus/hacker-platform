@@ -109,13 +109,19 @@ export interface TechnologyFingerprint {
 // ---------------------------------------------------------------------------
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
-export type Confidence = "confirmed" | "high" | "medium" | "low";
+export type Confidence = "high" | "medium" | "low";
 export type VerificationStatus =
+  | "suspected"
+  | "evidence_supported"
+  | "independently_verified"
+  | "inconclusive"
+  | "false_positive"
+  // Read compatibility for findings created before the verification model
+  // was made explicit. New scan results never emit these legacy values.
   | "unverified"
   | "verification_in_progress"
   | "confirmed"
-  | "likely"
-  | "false_positive";
+  | "likely";
 
 export interface Evidence {
   description: string;
@@ -233,4 +239,5 @@ export interface ScanResult {
   requestCount: number;
   stageDurationsMs: Partial<Record<ScanStage, number>>;
   stopReason: "completed" | "cancelled" | "duration_limit" | "request_limit" | "error";
+  capabilityReport?: import("./profiles.js").ScanCapabilityReport;
 }

@@ -97,27 +97,12 @@ export default function AuditPage() {
   const [events, setEvents] = useState<AuditEventRow[]>([]);
   const [category, setCategory] = useState<string>("ALL");
   const [search, setSearch] = useState("");
-  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     api
       .get<{ events: AuditEventRow[] }>(`/api/projects/${params.projectId}/audit-trail`)
       .then((r) => setEvents(r.events));
   }, [params.projectId]);
-
-  async function clearAuditTrail() {
-    if (events.length === 0) return;
-    if (!window.confirm("Clear all audit records for this project?")) return;
-    setClearing(true);
-    try {
-      await api.delete(`/api/projects/${params.projectId}/audit-trail`);
-      setEvents([]);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "Could not clear audit trail");
-    } finally {
-      setClearing(false);
-    }
-  }
 
   const counts = {
     ALL: events.length,
@@ -152,20 +137,7 @@ export default function AuditPage() {
         </div>
 
         <Panel>
-          <PanelHeader
-            title="Activity log"
-            action={
-              events.length > 0 ? (
-                <button
-                  onClick={clearAuditTrail}
-                  disabled={clearing}
-                  className="text-xs text-ink-600 underline hover:text-[#A4221B]"
-                >
-                  {clearing ? "Clearing…" : "Clear audit trail"}
-                </button>
-              ) : undefined
-            }
-          />
+          <PanelHeader title="Activity log" />
 
           {/* Clean standard tab bar */}
           <div className="flex items-center justify-between border-b border-paper-200 px-4">

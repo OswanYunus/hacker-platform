@@ -18,11 +18,7 @@ export default async function auditRoutes(app: FastifyInstance) {
     const { projectId } = req.params as { projectId: string };
     const access = await requireProjectAccess(req, reply, projectId);
     if (!access) return;
-    if (access.membership.role === "VIEWER") {
-      return reply.code(403).send({ error: "Viewers cannot clear audit trail" });
-    }
-    await prisma.auditEvent.deleteMany({ where: { projectId } });
-    return reply.send({ ok: true });
+    return reply.code(405).send({ error: "Audit trail is append-only and cannot be cleared." });
   });
 
   // Used by CI integrations: given a completed scan and a fail policy,

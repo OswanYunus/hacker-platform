@@ -2,13 +2,16 @@ import type { Finding } from "./types.js";
 import { severityWeight } from "./correlation.js";
 
 const CONFIDENCE_WEIGHT: Record<Finding["confidence"], number> = {
-  confirmed: 1.0,
   high: 0.85,
   medium: 0.6,
   low: 0.35,
 };
 
 const VERIFICATION_WEIGHT: Record<Finding["verification"], number> = {
+  independently_verified: 1.0,
+  evidence_supported: 0.8,
+  suspected: 0.5,
+  inconclusive: 0.25,
   confirmed: 1.0,
   likely: 0.75,
   unverified: 0.5,

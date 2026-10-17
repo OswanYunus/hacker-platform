@@ -5,7 +5,7 @@ interface ParsedCookie {
   secure: boolean;
   httpOnly: boolean;
   sameSite?: string;
-  raw: string;
+  safeDescription: string;
 }
 
 function parseSetCookie(headerValue: string): ParsedCookie {
@@ -19,7 +19,12 @@ function parseSetCookie(headerValue: string): ParsedCookie {
     secure: lowerAttrs.includes("secure"),
     httpOnly: lowerAttrs.includes("httponly"),
     sameSite: sameSiteAttr?.split("=")[1]?.trim(),
-    raw: headerValue,
+    // Cookie values may be live session credentials. Findings are streamed,
+    // stored and exported, so keep only the name and security attributes.
+    safeDescription: [
+      `${name}=[REDACTED]`,
+      ...attrs.filter((attr) => !attr.includes("=") || /^samesite\s*=/i.test(attr)),
+    ].join("; "),
   };
 }
 
@@ -47,7 +52,7 @@ export function checkCookies(exchange: HttpExchange): RawObservation[] {
           ruleId: "cookie-missing-secure",
           title: `Cookie "${cookie.name}" set without Secure attribute`,
           severity: sensitive ? "high" : "low",
-          confidence: "confirmed",
+          confidence: "high",
           cwe: "CWE-614",
           owaspCategory: "WSTG-SESS-02",
           rootCause: `The Set-Cookie header for "${cookie.name}" omits the Secure attribute on an HTTPS response.`,
@@ -122,7 +127,7 @@ function makeObservation(
     affectedEndpoint: exchange.request.url,
     references: ["https://owasp.org/www-community/controls/SecureCookieAttribute", "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie"],
     reproduction: `Request ${exchange.request.method} ${exchange.request.url} and inspect the Set-Cookie header for "${cookie.name}".`,
-    evidence: [{ description: `Set-Cookie: ${cookie.raw}`, exchangeId: exchange.id }],
+    evidence: [{ description: `Set-Cookie: ${cookie.safeDescription}`, exchangeId: exchange.id }],
     verification: "confirmed",
     firstSeenStage: "passive_analysis",
     module: "session",

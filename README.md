@@ -61,16 +61,69 @@ it runs bounded GET probes for injection indicators, path traversal, redirects,
 privileged paths, and ID-based access-control issues. Results include evidence
 and confidence levels; a scanner signal still needs human validation.
 
-Every target request passes through the scope, DNS/SSRF, rate, duration, and
-request-budget checks. The shared HTTP client allows only GET, HEAD, and OPTIONS.
-It never submits credentials, guesses passwords, or sends write methods. Scan
-events are timestamped and stored by session, and authorization/scope changes
-are recorded in the audit trail.
+Every scan requires a recorded authorization statement. By default, a live DNS
+TXT proof is also required for each in-scope host. For temporary local testing,
+operators may set `DNS_VERIFICATION_EXEMPT_HOSTS` to a comma-separated list of
+exact hostnames; wildcard entries are ignored, and a bypass only applies when
+that exact hostname is itself in the project's authorized scope. The scan audit
+records when proof was skipped. Remove the setting to require DNS proof again.
+Only organization owners/admins can authorize active tests or deep scans. Every
+target request also passes through host/path scope, DNS/SSRF, rate, duration,
+request-budget, and per-request timeout checks. Cancellation aborts in-flight
+HTTP requests. The shared HTTP client allows only GET, HEAD, and OPTIONS. It
+never submits credentials, guesses passwords, or sends write methods. When
+active testing is disabled, the HTTP client blocks active-testing,
+authenticated-comparison, and fixed-path enumeration stages; the engine also
+skips OpenAPI route requests and reports that skip in scan events. The crawler
+still fetches in-scope target pages and discovered links to perform baseline
+discovery and passive checks.
+
+Findings use separate confidence and verification fields. Rule-specific
+evidence checks downgrade unsupported claims to suspected or inconclusive;
+heuristic probe findings are capped at medium confidence, and a single timing
+observation is low confidence. No current check can label a finding
+independently verified. Scan events are timestamped and stored by session, and
+authorization, verification, blocked scan, and scope changes are recorded in
+the audit trail.
 
 This is an automated web/API assessment tool, not a replacement for a skilled
 penetration test. It does not test business logic comprehensively, prove legal
 or policy compliance, audit source code or cloud configuration, or prevent
-ransomware. Target ownership and requester employment verification are also
-not yet built; use it only for systems you are authorized to assess.
+ransomware. DNS control proves domain control, not a requester's employment or
+authority to test a particular company system. Requester/company authorization
+verification is not yet built; the recorded authorization statement remains an
+attestation, so use it only for systems you are authorized to assess.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the next product milestones.
+# Scan execution profiles and validation benchmark
+
+Scan jobs are persisted in PostgreSQL and claimed with conditional state
+transitions and expiring worker leases. A worker that loses its lease cannot
+complete the job; expired read-only scans are restarted from the beginning
+after clearing partial findings, with a three-attempt ceiling. The worker
+rechecks the project scope version before requests. Process restart recovery
+does not provide CPU or memory isolation, and a paused old process can still
+consume resources until its lease is noticed.
+
+Quick and CI run bounded discovery and passive checks. Standard adds
+authorized read-only active checks and API route comparison. Deep adds more
+discovery and matched repeat timing checks. Every profile is capped by the
+scope's request and duration limits, and active capabilities remain disabled
+when target authorization disallows them. Scan results persist a capability
+report; multi-identity object checks, browser JavaScript execution, dependency
+advisory analysis, adaptive planning, and independent verification are marked
+unavailable.
+
+Run the deterministic synthetic injection-validator benchmark with:
+
+```sh
+npm run benchmark --workspace @hacker/scanner-core -- security-benchmark-results.json
+```
+
+It records three repetitions of positive and safe in-process fixtures for SQL
+error, reflected XSS, path traversal canary, template evaluation, open redirect,
+and control comparisons. Command injection is explicitly unavailable because
+no command payloads are sent. It performs no network requests and
+does not measure real-server detection accuracy or end-to-end scanner runtime.
+The JSON labels this limitation and reports fixture counts, precision, recall,
+repeatability, request counts, runtime, confidence, and verification state.

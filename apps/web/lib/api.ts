@@ -5,10 +5,17 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  // Fastify rejects an empty request carrying application/json. Only set the
+  // JSON content type when this request actually has a body (POST/DELETE
+  // actions such as target verification and deletion intentionally have none).
+  if (init?.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const res = await fetch(path, {
     ...init,
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

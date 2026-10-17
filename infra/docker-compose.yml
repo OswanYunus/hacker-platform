@@ -41,6 +41,7 @@ services:
       LOG_LEVEL: info
       SCAN_LOG_DIR: /app/data/scan-logs
       SCAN_WORKER_CONCURRENCY: 2
+      DNS_VERIFICATION_EXEMPT_HOSTS: ${DNS_VERIFICATION_EXEMPT_HOSTS:-}
     depends_on:
       postgres:
         condition: service_healthy

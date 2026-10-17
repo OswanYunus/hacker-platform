@@ -4,6 +4,7 @@ import { targetSchema, createScopeSchema, authConfigSchema } from "../lib/schema
 import { requireProjectAccess } from "../plugins/authPlugin.js";
 import { recordAuditEvent } from "../services/auditLog.js";
 import { encryptSecret } from "../lib/crypto.js";
+import { createDnsChallenge, hasValidDnsChallenge, targetHostname } from "../services/targetVerification.js";
 
 export default async function scopeRoutes(app: FastifyInstance) {
   // --- Targets -------------------------------------------------------
@@ -22,10 +23,91 @@ export default async function scopeRoutes(app: FastifyInstance) {
       action: "target.added",
       targetType: "Target",
       targetId: target.id,
-      metadata: { type: target.type, value: target.value },
+      metadata: { type: target.type, hostname: safeTargetHostname(target) },
       ipAddress: req.ip,
     });
-    return reply.code(201).send({ target });
+    return reply.code(201).send({ target: publicTarget(target) });
+  });
+
+  app.post("/api/projects/:projectId/targets/:targetId/verification", async (req, reply) => {
+    const { projectId, targetId } = req.params as { projectId: string; targetId: string };
+    const access = await requireProjectAccess(req, reply, projectId);
+    if (!access) return;
+    if (access.membership.role !== "OWNER" && access.membership.role !== "ADMIN") {
+      return reply.code(403).send({ error: "Only organization owners/admins can verify target control." });
+    }
+    const target = await prisma.target.findFirst({ where: { id: targetId, projectId } });
+    if (!target) return reply.code(404).send({ error: "Target not found" });
+
+    let challenge;
+    try {
+      challenge = createDnsChallenge(target);
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+
+    await prisma.target.update({
+      where: { id: targetId },
+      data: {
+        verificationRecordName: challenge.recordName,
+        verificationTokenHash: challenge.tokenHash,
+        verifiedAt: null,
+      },
+    });
+    await recordAuditEvent({
+      organizationId: access.project.organizationId,
+      projectId,
+      actorId: req.currentUser!.id,
+      action: "target.verification_started",
+      targetType: "Target",
+      targetId,
+      metadata: { hostname: challenge.hostname, method: "DNS_TXT", recordName: challenge.recordName },
+      ipAddress: req.ip,
+    });
+    return reply.send({ verification: { method: "DNS_TXT", recordName: challenge.recordName, value: challenge.value } });
+  });
+
+  app.post("/api/projects/:projectId/targets/:targetId/verification/check", async (req, reply) => {
+    const { projectId, targetId } = req.params as { projectId: string; targetId: string };
+    const access = await requireProjectAccess(req, reply, projectId);
+    if (!access) return;
+    if (access.membership.role !== "OWNER" && access.membership.role !== "ADMIN") {
+      return reply.code(403).send({ error: "Only organization owners/admins can verify target control." });
+    }
+    const target = await prisma.target.findFirst({ where: { id: targetId, projectId } });
+    if (!target) return reply.code(404).send({ error: "Target not found" });
+    if (!target.verificationRecordName || !target.verificationTokenHash) {
+      return reply.code(409).send({ error: "Create a DNS verification record first." });
+    }
+
+    if (!(await hasValidDnsChallenge(target))) {
+      await prisma.target.update({ where: { id: targetId }, data: { verifiedAt: null } });
+      await recordAuditEvent({
+        organizationId: access.project.organizationId,
+        projectId,
+        actorId: req.currentUser!.id,
+        action: "target.verification_failed",
+        targetType: "Target",
+        targetId,
+        metadata: { hostname: safeTargetHostname(target), method: "DNS_TXT" },
+        ipAddress: req.ip,
+      });
+      return reply.code(409).send({ error: `DNS TXT record not found or does not match at ${target.verificationRecordName}.` });
+    }
+
+    const verifiedAt = new Date();
+    await prisma.target.update({ where: { id: targetId }, data: { verifiedAt } });
+    await recordAuditEvent({
+      organizationId: access.project.organizationId,
+      projectId,
+      actorId: req.currentUser!.id,
+      action: "target.verified",
+      targetType: "Target",
+      targetId,
+      metadata: { hostname: safeTargetHostname(target), method: "DNS_TXT", verifiedAt: verifiedAt.toISOString() },
+      ipAddress: req.ip,
+    });
+    return reply.send({ verified: true, verifiedAt });
   });
 
   app.patch("/api/projects/:projectId/targets/:targetId", async (req, reply) => {
@@ -43,7 +125,12 @@ export default async function scopeRoutes(app: FastifyInstance) {
 
     const target = await prisma.target.update({
       where: { id: targetId },
-      data: parsed.data,
+      data: {
+        ...parsed.data,
+        ...(parsed.data.type !== existing.type || parsed.data.value !== existing.value
+          ? { verificationRecordName: null, verificationTokenHash: null, verifiedAt: null }
+          : {}),
+      },
     });
     await recordAuditEvent({
       organizationId: access.project.organizationId,
@@ -52,10 +139,14 @@ export default async function scopeRoutes(app: FastifyInstance) {
       action: "target.updated",
       targetType: "Target",
       targetId: target.id,
-      metadata: { changes: parsed.data },
+      metadata: {
+        type: target.type,
+        hostname: safeTargetHostname(target),
+        verificationReset: parsed.data.type !== existing.type || parsed.data.value !== existing.value,
+      },
       ipAddress: req.ip,
     });
-    return reply.send({ target });
+    return reply.send({ target: publicTarget(target) });
   });
 
   app.delete("/api/projects/:projectId/targets/:targetId", async (req, reply) => {
@@ -100,6 +191,9 @@ export default async function scopeRoutes(app: FastifyInstance) {
     }
     const parsed = createScopeSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    if (parsed.data.activeTestingAllowed && access.membership.role !== "OWNER" && access.membership.role !== "ADMIN") {
+      return reply.code(403).send({ error: "Only organization owners/admins can authorize active testing." });
+    }
 
     const scopeVersion = await prisma.$transaction(async (tx: any) => {
       await tx.scopeVersion.updateMany({ where: { projectId, isActive: true }, data: { isActive: false } });
@@ -206,4 +300,34 @@ export default async function scopeRoutes(app: FastifyInstance) {
 
     return reply.code(201).send({ authConfig: { id: authConfig.id, roleLabel: authConfig.roleLabel, mechanism: authConfig.mechanism } });
   });
+}
+
+function publicTarget<T extends {
+  id: string;
+  projectId: string;
+  type: string;
+  value: string;
+  label: string | null;
+  verificationRecordName: string | null;
+  verifiedAt: Date | null;
+  createdAt: Date;
+}>(target: T) {
+  return {
+    id: target.id,
+    projectId: target.projectId,
+    type: target.type,
+    value: target.value,
+    label: target.label,
+    verificationRecordName: target.verificationRecordName,
+    verifiedAt: target.verifiedAt,
+    createdAt: target.createdAt,
+  };
+}
+
+function safeTargetHostname(target: { type: string; value: string }): string {
+  try {
+    return targetHostname(target);
+  } catch {
+    return "invalid-target";
+  }
 }

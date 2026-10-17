@@ -55,12 +55,14 @@ const PRIVILEGED_PATH_PATTERNS = [
 function makeObs(
   url: string,
   probeUrl: string,
-  fields: Omit<RawObservation, "affectedEndpoint" | "evidence" | "verification" | "firstSeenStage" | "module" | "reproduction">,
+  fields: Omit<RawObservation, "affectedEndpoint" | "evidence" | "verification" | "firstSeenStage" | "module" | "reproduction"> & {
+    evidence?: RawObservation["evidence"];
+  },
 ): RawObservation {
   return {
     ...fields,
     affectedEndpoint: url,
-    evidence: [
+    evidence: fields.evidence ?? [
       {
         description: fields.rootCause,
         detail: `Probe URL: ${probeUrl}`,
@@ -171,8 +173,9 @@ export async function checkSequentialIdor(
 }
 
 /**
- * Probes common administrative and internal paths without authentication.
- * A 200 OK response that isn't a redirect-to-login counts as a finding.
+ * Probes common administrative and internal paths without credentials.
+ * A successful response is only a finding when it differs from the public
+ * origin baseline and contains concrete administrative functionality markers.
  */
 export async function checkPrivilegedPathAccess(
   client: ScannerHttpClient,
@@ -182,33 +185,57 @@ export async function checkPrivilegedPathAccess(
   const origin = new URL(endpoint.url).origin;
   const observations: RawObservation[] = [];
 
+  let baseline: Awaited<ReturnType<ScannerHttpClient["getAnonymous"]>>;
+  try {
+    baseline = await client.getAnonymous(`${origin}/`, STAGE);
+  } catch {
+    return observations;
+  }
+  if (baseline.response.status !== 200) return observations;
+  const baselineBody = normalizeResponseBody(baseline.response.body ?? baseline.response.bodyPreview ?? "");
+
   for (const path of PRIVILEGED_PATH_PATTERNS) {
     const probeUrl = origin + path;
     try {
-      const ex = await client.get(probeUrl, STAGE);
-      // 401/403 = correctly guarded. 302 likely redirects to login — OK.
-      // 200 with non-trivial body = potential exposure.
+      const ex = await client.getAnonymous(probeUrl, STAGE);
       if (ex.response.status === 200) {
         const body = ex.response.body ?? ex.response.bodyPreview ?? "";
-        const looksLikeLogin = /login|sign.?in|auth/i.test(body);
-        if (!looksLikeLogin && body.length > 200) {
+        const normalizedBody = normalizeResponseBody(body);
+        const contentType = ex.response.headers["content-type"] ?? "";
+        const isHtmlOrJson = /(?:text\/html|application\/(?:[^;]+\+)?json)/i.test(contentType);
+        const isSameAsPublicFallback = normalizedBody.length > 0 && normalizedBody === baselineBody;
+        const hasAdminFunctionality = ADMIN_FUNCTIONALITY_MARKERS.some((marker) => marker.test(body));
+        const isLoginPage = /\b(?:login|sign[ -]?in|authentication required)\b/i.test(body);
+        if (isHtmlOrJson && !isSameAsPublicFallback && !isLoginPage && hasAdminFunctionality) {
           observations.push(
-            makeObs(endpoint.url, probeUrl, {
+            makeObs(probeUrl, probeUrl, {
               ruleId: "privileged-path-no-auth",
               title: "Privileged Administrative Path Accessible Without Authentication",
-              severity: "critical",
+              severity: "high",
               confidence: "medium",
               cwe: "CWE-284",
               owaspCategory: "OWASP A01:2021 — Broken Access Control",
               rootCause:
-                `'${probeUrl}' returned HTTP 200 with ${body.length} bytes without a valid session. ` +
-                `The endpoint appears to serve privileged content without authentication.`,
+                `'${probeUrl}' returned HTTP 200 to a credential-free request and contained administrative ` +
+                `functionality markers absent from the public origin response. Content-Type: ${contentType}.`,
               impact:
                 "Unauthenticated access to admin panels allows account takeover, data modification, " +
                 "configuration changes, and full system compromise.",
               remediation:
                 "Ensure every administrative route enforces authentication and role-based authorisation " +
                 "at the framework or middleware level. Never rely solely on obscurity.",
+              evidence: [
+                {
+                  description: "Anonymous HTTP 200 response contained administrative functionality markers.",
+                  detail: `Probe URL: ${probeUrl}; Content-Type: ${contentType}; matched marker: ${ADMIN_FUNCTIONALITY_MARKERS.find((marker) => marker.test(body))?.source}`,
+                  exchangeId: ex.id,
+                },
+                {
+                  description: "Anonymous public homepage baseline was compared and did not match the candidate response.",
+                  detail: `Baseline URL: ${origin}/; HTTP ${baseline.response.status}; normalized response bodies differ.`,
+                  exchangeId: baseline.id,
+                },
+              ],
               references: [
                 "https://owasp.org/www-project-top-ten/2021/A01_2021-Broken_Access_Control",
               ],
@@ -222,4 +249,16 @@ export async function checkPrivilegedPathAccess(
   }
 
   return observations;
+}
+
+const ADMIN_FUNCTIONALITY_MARKERS = [
+  /\badmin(?:istrative)?\s+(?:dashboard|panel|console|portal)\b/i,
+  /\b(?:user|role|permission|access)\s+management\b/i,
+  /\bmanage\s+(?:users|accounts|roles|permissions)\b/i,
+  /\b(?:system|security|billing)\s+settings\b/i,
+  /\b(?:delete|disable|edit)\s+(?:user|account|role)\b/i,
+];
+
+function normalizeResponseBody(body: string): string {
+  return body.replace(/\s+/g, " ").trim();
 }

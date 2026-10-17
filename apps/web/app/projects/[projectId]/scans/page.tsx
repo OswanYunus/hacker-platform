@@ -25,9 +25,9 @@ interface AuthProfile {
 }
 
 const PROFILE_DESCRIPTIONS: Record<string, string> = {
-  QUICK: "Fast passive checks, ~25 pages. Good for a sanity check before a deeper run.",
-  STANDARD: "Normal assessment depth, ~100 pages.",
-  DEEP: "Comprehensive crawl, up to 400 pages and 6 links deep. Uses the scope's request and time budgets.",
+  QUICK: "Fast scan, ~25 pages. Active checks run only when the authorized scope permits them.",
+  STANDARD: "Normal assessment depth, ~100 pages. Active checks require owner/admin authorization and DNS control proof by default.",
+  DEEP: "Expanded crawl, up to 400 pages and 6 links deep. Requires active-testing authorization and DNS control proof by default.",
   CI: "Fast, regression-oriented — tuned for pipeline gating.",
 };
 

@@ -12,6 +12,13 @@ interface Target {
   id: string;
   type: string;
   value: string;
+  verificationRecordName?: string | null;
+  verifiedAt?: string | null;
+}
+
+interface DnsChallenge {
+  recordName: string;
+  value: string;
 }
 
 interface ScopeVersion {
@@ -41,6 +48,7 @@ interface AuthConfigSummary {
 
 export default function ScopePage() {
   const params = useParams<{ projectId: string }>();
+  const verificationStorageKey = `dns-verification-challenges:${params.projectId}`;
   const nav = projectNavItems(params.projectId);
   const [targets, setTargets] = useState<Target[]>([]);
   const [scopeHistory, setScopeHistory] = useState<ScopeVersion[]>([]);
@@ -69,7 +77,24 @@ export default function ScopePage() {
     });
   }
 
-  useEffect(reload, [params.projectId]);
+  useEffect(() => {
+    reload();
+    setVerificationChallenges({});
+    try {
+      const savedChallenges = sessionStorage.getItem(verificationStorageKey);
+      if (savedChallenges) {
+        const parsed = JSON.parse(savedChallenges) as Record<string, DnsChallenge>;
+        const valid = Object.fromEntries(
+          Object.entries(parsed).filter(([, challenge]) =>
+            typeof challenge?.recordName === "string" && typeof challenge?.value === "string",
+          ),
+        );
+        setVerificationChallenges(valid);
+      }
+    } catch {
+      sessionStorage.removeItem(verificationStorageKey);
+    }
+  }, [params.projectId]);
 
   const activeScope = scopeHistory.find((s) => s.isActive);
 
@@ -77,6 +102,20 @@ export default function ScopePage() {
   const [editTargetForm, setEditTargetForm] = useState({ type: "DOMAIN", value: "" });
   const [targetError, setTargetError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [verificationChallenges, setVerificationChallenges] = useState<Record<string, DnsChallenge>>({});
+  const [checkingVerificationId, setCheckingVerificationId] = useState<string | null>(null);
+
+  function clearVerificationChallenge(targetId: string) {
+    const next = { ...verificationChallenges };
+    delete next[targetId];
+    setVerificationChallenges(next);
+    try {
+      if (Object.keys(next).length > 0) sessionStorage.setItem(verificationStorageKey, JSON.stringify(next));
+      else sessionStorage.removeItem(verificationStorageKey);
+    } catch {
+      // The in-memory challenge remains usable if browser storage is unavailable.
+    }
+  }
 
   async function addTarget(e: React.FormEvent) {
     e.preventDefault();
@@ -105,6 +144,7 @@ export default function ScopePage() {
     setTargetError(null);
     try {
       await api.patch(`/api/projects/${params.projectId}/targets/${targetId}`, editTargetForm);
+      clearVerificationChallenge(targetId);
       setEditingTargetId(null);
       reload();
     } catch (err: any) {
@@ -118,6 +158,7 @@ export default function ScopePage() {
     setIsDeleting(true);
     setTargetError(null);
     setTargets((prev) => prev.filter((t) => t.id !== targetId));
+    clearVerificationChallenge(targetId);
     try {
       await api.delete(`/api/projects/${params.projectId}/targets/${targetId}`);
     } catch (err: any) {
@@ -125,6 +166,39 @@ export default function ScopePage() {
     } finally {
       setIsDeleting(false);
       reload();
+    }
+  }
+
+  async function startTargetVerification(targetId: string) {
+    setTargetError(null);
+    try {
+      const result = await api.post<{ verification: DnsChallenge }>(
+        `/api/projects/${params.projectId}/targets/${targetId}/verification`,
+      );
+      setVerificationChallenges((current) => ({ ...current, [targetId]: result.verification }));
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(verificationStorageKey) || "{}");
+        sessionStorage.setItem(verificationStorageKey, JSON.stringify({ ...saved, [targetId]: result.verification }));
+      } catch {
+        // The returned challenge remains available in the current page session.
+      }
+      reload();
+    } catch (err) {
+      setTargetError(err instanceof Error ? err.message : "Could not create DNS verification record.");
+    }
+  }
+
+  async function checkTargetVerification(targetId: string) {
+    setCheckingVerificationId(targetId);
+    setTargetError(null);
+    try {
+      await api.post(`/api/projects/${params.projectId}/targets/${targetId}/verification/check`);
+      clearVerificationChallenge(targetId);
+      reload();
+    } catch (err) {
+      setTargetError(err instanceof Error ? err.message : "The DNS verification record was not found yet.");
+    } finally {
+      setCheckingVerificationId(null);
     }
   }
 
@@ -206,7 +280,7 @@ export default function ScopePage() {
         />
 
         <Panel>
-          <PanelHeader title="Targets" subtitle="Domains, URLs, API endpoints, or IP ranges in scope." />
+          <PanelHeader title="Targets" subtitle="Prove domain control before scanning. The proof is checked again when each scan starts." />
           <div className="p-4">
             {targetError && (
               <div className="mb-3 rounded border border-[#A4221B]/30 bg-red-50 px-3 py-2 text-xs font-medium text-[#A4221B]">
@@ -218,7 +292,8 @@ export default function ScopePage() {
                 <tr>
                   <th className="w-32">Type</th>
                   <th>Value</th>
-                  <th className="w-36 text-right">Actions</th>
+                  <th className="w-40">DNS control</th>
+                  <th className="w-48 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -238,7 +313,7 @@ export default function ScopePage() {
                             <option value="IP_RANGE">IP range</option>
                           </select>
                         </td>
-                        <td>
+                        <td colSpan={2}>
                           <input
                             required
                             className={inputClass}
@@ -267,7 +342,21 @@ export default function ScopePage() {
                       <>
                         <td className="w-32">{t.type}</td>
                         <td className="mono">{t.value}</td>
+                        <td>
+                          {t.verifiedAt ? (
+                            <span className="text-xs font-medium text-[#2E6B1F]">Verified · {new Date(t.verifiedAt).toLocaleDateString()}</span>
+                          ) : (
+                            <span className="text-xs text-ink-600">Not verified</span>
+                          )}
+                        </td>
                         <td className="text-right space-x-3">
+                          <button
+                            type="button"
+                            onClick={() => startTargetVerification(t.id)}
+                            className="text-xs font-semibold text-ink-950 hover:underline"
+                          >
+                            {t.verificationRecordName ? "New proof" : "Verify"}
+                          </button>
                           <button
                             type="button"
                             onClick={() => startEdit(t)}
@@ -289,11 +378,31 @@ export default function ScopePage() {
                 ))}
                 {targets.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="py-4 text-center text-ink-600">No targets added yet.</td>
+                    <td colSpan={4} className="py-4 text-center text-ink-600">No targets added yet.</td>
                   </tr>
                 )}
               </tbody>
             </table>
+            {Object.entries(verificationChallenges).map(([targetId, challenge]) => (
+              <div key={targetId} className="mb-4 rounded border border-paper-300 bg-paper-50 p-3 text-sm">
+                <p className="font-semibold text-ink-950">Add this TXT record to your domain DNS</p>
+                <p className="mt-1 text-xs text-ink-600">The scanner checks this record before each scan. DNS changes can take a few minutes to appear.</p>
+                <p className="mt-1 text-xs text-ink-600">This proof is kept in this browser tab if you refresh the page.</p>
+                <dl className="mt-3 grid gap-2 text-xs md:grid-cols-[90px_1fr]">
+                  <dt className="font-medium">Record name</dt><dd className="break-all font-mono">{challenge.recordName}</dd>
+                  <dt className="font-medium">Record type</dt><dd>TXT</dd>
+                  <dt className="font-medium">Value</dt><dd className="break-all font-mono">{challenge.value}</dd>
+                </dl>
+                <div className="mt-3 flex items-center gap-2">
+                  <Button type="button" variant="secondary" disabled={checkingVerificationId === targetId} onClick={() => checkTargetVerification(targetId)}>
+                    {checkingVerificationId === targetId ? "Checking DNS…" : "Check DNS proof"}
+                  </Button>
+                  <button type="button" className="text-xs text-ink-600 hover:underline" onClick={() => clearVerificationChallenge(targetId)}>
+                    Hide
+                  </button>
+                </div>
+              </div>
+            ))}
             <form onSubmit={addTarget} className="flex items-end gap-2">
               <Field label="Type">
                 <select className={inputClass} value={newTarget.type} onChange={(e) => setNewTarget({ ...newTarget, type: e.target.value })}>
@@ -397,8 +506,9 @@ export default function ScopePage() {
               <span>
                 <span className="font-medium text-ink-900">Permit active testing.</span>{" "}
                 <span className="text-ink-600">
-                  When off, scans only run discovery and passive analysis. When on, verification-oriented active checks may
-                  run (see scan profiles). Leave off for production targets unless you specifically intend active testing.
+                  When off, scans only run discovery and passive analysis. When on, active checks require an
+                  organization owner/admin authorization statement. DNS control proof is also required by default;
+                  the local operator can temporarily exempt exact test hostnames.
                 </span>
               </span>
             </label>

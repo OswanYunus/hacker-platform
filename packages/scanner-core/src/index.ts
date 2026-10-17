@@ -6,6 +6,7 @@ export * from "./techDetection.js";
 export * from "./correlation.js";
 export * from "./riskScoring.js";
 export * from "./engine.js";
+export * from "./profiles.js";
 export * from "./checks/headers.js";
 export * from "./checks/cookies.js";
 export * from "./checks/infoDisclosure.js";

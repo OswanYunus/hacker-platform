@@ -1,4 +1,5 @@
 import type { Finding, RawObservation } from "./types.js";
+import { assessVerification, calibrateConfidence } from "./verification.js";
 
 /**
  * Groups raw per-request observations into unique findings. Two
@@ -23,9 +24,19 @@ export function correlateFindings(observations: RawObservation[]): Finding[] {
   for (const [key, obsList] of groups) {
     const primary = obsList[0];
     const allEvidence = obsList.flatMap((o) => o.evidence).slice(0, 10); // cap evidence stored per finding
+    const statuses = obsList.map(assessVerification);
+    const verification = statuses.includes("evidence_supported")
+      ? "evidence_supported"
+      : statuses.includes("inconclusive")
+        ? "inconclusive"
+        : statuses.includes("false_positive")
+          ? "false_positive"
+          : "suspected";
     counter++;
     findings.push({
       ...primary,
+      confidence: calibrateConfidence(primary, verification),
+      verification,
       id: `fnd_${counter}_${key.slice(0, 24).replace(/[^a-z0-9]/gi, "")}`,
       evidence: allEvidence,
       occurrences: obsList.length,

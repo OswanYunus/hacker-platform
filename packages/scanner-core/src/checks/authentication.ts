@@ -281,7 +281,7 @@ export function checkSessionTokenEntropy(
         ruleId: "cookie-missing-httponly",
         title: `Session Cookie Missing HttpOnly Flag (${cookieName})`,
         severity: "medium",
-        confidence: "confirmed",
+        confidence: "high",
         cwe: "CWE-1004",
         owaspCategory: "OWASP A07:2021 — Identification and Authentication Failures",
         rootCause:
@@ -301,7 +301,7 @@ export function checkSessionTokenEntropy(
         ruleId: "cookie-missing-secure",
         title: `Session Cookie Missing Secure Flag (${cookieName})`,
         severity: "medium",
-        confidence: "confirmed",
+        confidence: "high",
         cwe: "CWE-614",
         owaspCategory: "OWASP A07:2021 — Identification and Authentication Failures",
         rootCause:

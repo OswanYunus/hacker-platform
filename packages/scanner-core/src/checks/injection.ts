@@ -20,6 +20,7 @@
 
 import type { ScannerHttpClient } from "../httpClient.js";
 import type { DiscoveredEndpoint, RawObservation, ScanStage } from "../types.js";
+import * as cheerio from "cheerio";
 
 const STAGE: ScanStage = "active_testing";
 const MODULE = "input-validation" as const;
@@ -60,7 +61,7 @@ const SQLI_ERROR_PATTERNS: RegExp[] = [
 
 const SQLI_TIME_PAYLOAD_MYSQL = "' OR SLEEP(5)--";
 const SQLI_TIME_PAYLOAD_PG = "'; SELECT pg_sleep(5)--";
-const SQLI_TIME_THRESHOLD_MS = 4500; // conservative: 90 % of sleep(5)
+const SQLI_TIME_THRESHOLD_MS = 4000;
 
 // ---------------------------------------------------------------------------
 // XSS probes
@@ -76,19 +77,10 @@ const XSS_PAYLOADS = [XSS_CANARY, XSS_CANARY_ATTR, XSS_CANARY_JS];
 // Path traversal probes
 // ---------------------------------------------------------------------------
 
-const TRAVERSAL_PAYLOADS = [
-  "../../../../etc/passwd",
-  "..%2F..%2F..%2F..%2Fetc%2Fpasswd",
-  "%2e%2e%2f%2e%2e%2fetc%2fpasswd",
-  "....//....//....//etc/passwd",
-  "/etc/passwd",
-];
+// A synthetic canary path avoids requesting real sensitive system files.
+const TRAVERSAL_PAYLOADS = ["../../../../scan-benchmark-canary.txt", "..%2F..%2F..%2Fscan-benchmark-canary.txt"];
 
-const TRAVERSAL_INDICATORS = [
-  /root:.*:0:0:/,
-  /\[boot loader\]/i,
-  /\[extensions\]/i,
-];
+const TRAVERSAL_INDICATORS = [/SCAN_BENCHMARK_CANARY_[A-Z0-9]+/];
 
 // ---------------------------------------------------------------------------
 // SSTI probe
@@ -108,9 +100,6 @@ const REDIRECT_PARAMS = ["redirect", "redirect_uri", "redirect_url", "next", "re
 // Command injection
 // ---------------------------------------------------------------------------
 
-const CMDI_PAYLOAD_UNIX = "; sleep 5";
-const CMDI_PAYLOAD_WIN = " & timeout 5";
-const CMDI_TIME_THRESHOLD_MS = 4500;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,6 +125,7 @@ function makeObs(
   url: string,
   probeUrl: string,
   fields: Omit<RawObservation, "affectedEndpoint" | "evidence" | "verification" | "firstSeenStage" | "module" | "reproduction">,
+  evidenceDetail?: string,
 ): RawObservation {
   return {
     ...fields,
@@ -143,7 +133,7 @@ function makeObs(
     evidence: [
       {
         description: fields.rootCause,
-        detail: `Probe URL: ${probeUrl}`,
+        detail: evidenceDetail ?? `Probe URL: ${probeUrl}`,
       },
     ],
     reproduction: `Send GET/POST to ${probeUrl} and inspect response.`,
@@ -160,20 +150,35 @@ function makeObs(
 export async function checkSqliGetParams(
   client: ScannerHttpClient,
   endpoint: DiscoveredEndpoint,
+  options: { timingValidation?: boolean } = {},
 ): Promise<RawObservation[]> {
   if (!endpoint.url.startsWith("http")) return [];
   const observations: RawObservation[] = [];
   const params = getParams(endpoint);
 
   for (const param of params) {
+    let baselineBody = "";
+    let baselineStatus = 0;
+    try {
+      const baseline = await client.get(injectParam(endpoint.url, param, "scan-control"), STAGE);
+      baselineBody = baseline.response.body ?? baseline.response.bodyPreview ?? "";
+      baselineStatus = baseline.response.status;
+    } catch {
+      continue;
+    }
+    const baselineHasSqlError = SQLI_ERROR_PATTERNS.some((re) => re.test(baselineBody));
+
     // Error-based
-    for (const payload of SQLI_PAYLOADS) {
+    for (const payload of baselineStatus < 500 && !baselineHasSqlError ? SQLI_PAYLOADS : []) {
       const probeUrl = injectParam(endpoint.url, param, payload);
       try {
         const ex = await client.get(probeUrl, STAGE);
         const body = ex.response.body ?? ex.response.bodyPreview ?? "";
         const matched = SQLI_ERROR_PATTERNS.find((re) => re.test(body));
-        if (matched) {
+        if (matched && ex.response.status < 500) {
+          const confirmation = await client.get(probeUrl, STAGE);
+          const confirmationBody = confirmation.response.body ?? confirmation.response.bodyPreview ?? "";
+          if (confirmation.response.status >= 500 || !matched.test(confirmationBody)) continue;
           observations.push(
             makeObs(endpoint.url, probeUrl, {
               ruleId: "sqli-error-based",
@@ -183,7 +188,7 @@ export async function checkSqliGetParams(
               cwe: "CWE-89",
               owaspCategory: "OWASP A03:2021 — Injection",
               rootCause:
-                `The '${param}' parameter reflects raw SQL error output when injected with: ${payload}`,
+                `The '${param}' parameter produced the same SQL error signature in two probe responses; the matched baseline did not contain it.`,
               impact:
                 "An attacker can read, modify, or delete arbitrary database records. " +
                 "On some databases, command execution is possible.",
@@ -194,7 +199,7 @@ export async function checkSqliGetParams(
                 "https://owasp.org/www-project-top-ten/2017/A1_2017-Injection",
                 "https://portswigger.net/web-security/sql-injection",
               ],
-            }),
+            }, `Control HTTP ${baselineStatus} had no SQL error signature; two ${payload} probes matched ${matched}.`),
           );
           break; // One finding per param is enough
         }
@@ -203,63 +208,54 @@ export async function checkSqliGetParams(
       }
     }
 
-    // Time-based blind (MySQL)
-    try {
-      const probeUrl = injectParam(endpoint.url, param, SQLI_TIME_PAYLOAD_MYSQL);
-      const t0 = Date.now();
-      await client.get(probeUrl, STAGE);
-      const elapsed = Date.now() - t0;
-      if (elapsed >= SQLI_TIME_THRESHOLD_MS) {
+    if (options.timingValidation) {
+      // Time-based probes are available only in Deep mode. Each probe must
+      // exceed its immediately preceding control by at least four seconds in
+      // two separate pairs, with non-server-error responses.
+      for (const [ruleId, payload, product] of [
+        ["sqli-time-based", SQLI_TIME_PAYLOAD_MYSQL, "MySQL/MariaDB"],
+        ["sqli-time-based-pg", SQLI_TIME_PAYLOAD_PG, "PostgreSQL"],
+      ] as const) {
+        const probeUrl = injectParam(endpoint.url, param, payload);
+        const timings: number[] = [];
+        let controlled = true;
+        for (let sample = 0; sample < 2; sample++) {
+          try {
+            const control = await client.get(injectParam(endpoint.url, param, `scan-timing-control-${sample}`), STAGE);
+            const probe = await client.get(probeUrl, STAGE);
+            if (control.response.status >= 500 || probe.response.status >= 500) {
+              controlled = false;
+              break;
+            }
+            const delta = probe.response.timingMs - control.response.timingMs;
+            timings.push(delta);
+            if (delta < SQLI_TIME_THRESHOLD_MS) {
+              controlled = false;
+              break;
+            }
+          } catch {
+            controlled = false;
+            break;
+          }
+        }
+        if (!controlled || timings.length !== 2) continue;
         observations.push(
           makeObs(endpoint.url, probeUrl, {
-            ruleId: "sqli-time-based",
-            title: "SQL Injection — Time-based Blind (MySQL/MariaDB)",
+              ruleId,
+              title: `SQL Injection — Paired Time-based Blind (${product})`,
             severity: "critical",
-            confidence: "medium",
+              confidence: "high",
             cwe: "CWE-89",
             owaspCategory: "OWASP A03:2021 — Injection",
-            rootCause:
-              `Response to '${SQLI_TIME_PAYLOAD_MYSQL}' in '${param}' was delayed ${elapsed}ms, consistent with SLEEP(5) execution.`,
+              rootCause: `Two ${product} delay probes each exceeded a matched control by at least ${SQLI_TIME_THRESHOLD_MS}ms (${timings.join("ms and ")}ms).`,
             impact:
-              "Confirms blind SQL injection. Even without visible error output, an attacker can extract " +
-              "the entire database contents via boolean/time-based enumeration.",
+                "Repeated controlled delay behavior is consistent with blind SQL injection and requires manual validation in an authorized test environment.",
             remediation:
               "Use parameterized queries. Audit every place user input touches a database query.",
             references: ["https://portswigger.net/web-security/sql-injection/blind"],
-          }),
+            }, `Matched control/probe timing deltas: ${timings.join("ms, ")}ms; two pairs required.`),
         );
       }
-    } catch {
-      // non-fatal
-    }
-
-    // Time-based blind (PostgreSQL)
-    try {
-      const probeUrl = injectParam(endpoint.url, param, SQLI_TIME_PAYLOAD_PG);
-      const t0 = Date.now();
-      await client.get(probeUrl, STAGE);
-      const elapsed = Date.now() - t0;
-      if (elapsed >= SQLI_TIME_THRESHOLD_MS) {
-        observations.push(
-          makeObs(endpoint.url, probeUrl, {
-            ruleId: "sqli-time-based-pg",
-            title: "SQL Injection — Time-based Blind (PostgreSQL)",
-            severity: "critical",
-            confidence: "medium",
-            cwe: "CWE-89",
-            owaspCategory: "OWASP A03:2021 — Injection",
-            rootCause:
-              `Response to '${SQLI_TIME_PAYLOAD_PG}' in '${param}' was delayed ${elapsed}ms, consistent with pg_sleep(5).`,
-            impact:
-              "Confirms blind SQL injection. An attacker can enumerate the database via time-based inference.",
-            remediation:
-              "Use parameterized queries. Audit every place user input touches a database query.",
-            references: ["https://portswigger.net/web-security/sql-injection/blind"],
-          }),
-        );
-      }
-    } catch {
-      // non-fatal
     }
   }
 
@@ -282,7 +278,10 @@ export async function checkReflectedXss(
         const ct = (ex.response.headers["content-type"] ?? "").toLowerCase();
         if (!ct.includes("text/html")) continue; // XSS only relevant in HTML context
         const body = ex.response.body ?? ex.response.bodyPreview ?? "";
-        if (body.includes(payload)) {
+        const $ = cheerio.load(body);
+        const executableContext = $("script").toArray().some((node) => $(node).html()?.includes("alert(1)")) ||
+          $("[onerror], [onload], [onclick]").toArray().some((node) => /alert\s*\(\s*1\s*\)/i.test($(node).attr("onerror") ?? $(node).attr("onload") ?? $(node).attr("onclick") ?? ""));
+        if (executableContext) {
           observations.push(
             makeObs(endpoint.url, probeUrl, {
               ruleId: "reflected-xss",
@@ -292,7 +291,7 @@ export async function checkReflectedXss(
               cwe: "CWE-79",
               owaspCategory: "OWASP A03:2021 — Injection",
               rootCause:
-                `The '${param}' parameter value is reflected unescaped in the HTML response. ` +
+                `The '${param}' parameter was parsed into an executable HTML script or event-handler context. ` +
                 `Payload: ${payload}`,
               impact:
                 "An attacker can craft a URL that executes arbitrary JavaScript in the victim's browser, " +
@@ -304,7 +303,7 @@ export async function checkReflectedXss(
                 "https://owasp.org/www-community/attacks/xss/",
                 "https://portswigger.net/web-security/cross-site-scripting/reflected",
               ],
-            }),
+            }, `HTML parser found the canary in an executable script or event-handler context; response content type was ${ct}.`),
           );
           break; // One finding per param
         }
@@ -328,13 +327,19 @@ export async function checkPathTraversal(
   );
 
   for (const param of params) {
+    let baseline = "";
+    try { const control = await client.get(injectParam(endpoint.url, param, "scan-control"), STAGE); baseline = control.response.body ?? control.response.bodyPreview ?? ""; }
+    catch { continue; }
     for (const payload of TRAVERSAL_PAYLOADS) {
       const probeUrl = injectParam(endpoint.url, param, payload);
       try {
         const ex = await client.get(probeUrl, STAGE);
         const body = ex.response.body ?? ex.response.bodyPreview ?? "";
-        const matched = TRAVERSAL_INDICATORS.find((re) => re.test(body));
+        const matched = TRAVERSAL_INDICATORS.find((re) => !re.test(baseline) && re.test(body));
         if (matched) {
+          const confirmation = await client.get(probeUrl, STAGE);
+          const confirmationBody = confirmation.response.body ?? confirmation.response.bodyPreview ?? "";
+          if (!matched.test(confirmationBody)) continue;
           observations.push(
             makeObs(endpoint.url, probeUrl, {
               ruleId: "path-traversal",
@@ -353,7 +358,7 @@ export async function checkPathTraversal(
                 "Validate file paths against an explicit allow-list. Never construct file paths from user input. " +
                 "Use a realpath check and assert the resolved path is within the expected base directory.",
               references: ["https://owasp.org/www-community/attacks/Path_Traversal"],
-            }),
+            }, `Control lacked the synthetic canary; two identical traversal probes returned it.`),
           );
           break;
         }
@@ -377,9 +382,15 @@ export async function checkSsti(
   for (const param of params) {
     const probeUrl = injectParam(endpoint.url, param, SSTI_PAYLOAD);
     try {
+      const baseline = await client.get(injectParam(endpoint.url, param, "scan-control"), STAGE);
+      const baselineBody = baseline.response.body ?? baseline.response.bodyPreview ?? "";
+      if (baselineBody.includes(SSTI_EXPECTED)) continue;
       const ex = await client.get(probeUrl, STAGE);
       const body = ex.response.body ?? ex.response.bodyPreview ?? "";
       if (body.includes(SSTI_EXPECTED)) {
+        const confirmation = await client.get(probeUrl, STAGE);
+        const confirmationBody = confirmation.response.body ?? confirmation.response.bodyPreview ?? "";
+        if (!confirmationBody.includes(SSTI_EXPECTED)) continue;
         observations.push(
           makeObs(endpoint.url, probeUrl, {
             ruleId: "ssti",
@@ -401,7 +412,7 @@ export async function checkSsti(
               "https://portswigger.net/research/server-side-template-injection",
               "https://owasp.org/www-community/vulnerabilities/Server_Side_Template_Injection",
             ],
-          }),
+          }, `Control response lacked 49; two expression probes returned 49.`),
         );
         break; // One finding per endpoint is sufficient
       }
@@ -424,10 +435,14 @@ export async function checkOpenRedirect(
     const probeUrl = injectParam(endpoint.url, param, OPEN_REDIRECT_TARGET);
     try {
       // maxRedirects=0 so we can inspect the raw 3xx without following it
+      const control = await client.request("GET", injectParam(endpoint.url, param, "https://scan-probe-control.invalid"), STAGE, { maxRedirects: 0 });
+      const controlLocation = control.response.headers["location"] ?? "";
       const ex = await client.request("GET", probeUrl, STAGE, { maxRedirects: 0 });
       if (ex.response.status >= 300 && ex.response.status < 400) {
         const location = ex.response.headers["location"] ?? "";
-        if (location.startsWith(OPEN_REDIRECT_TARGET) || location.includes("scan-probe-redir.invalid")) {
+        if ((location.startsWith(OPEN_REDIRECT_TARGET) || location.includes("scan-probe-redir.invalid")) && !controlLocation.startsWith("https://scan-probe-control.invalid")) {
+          const confirmation = await client.request("GET", probeUrl, STAGE, { maxRedirects: 0 });
+          if (!(confirmation.response.headers["location"] ?? "").startsWith(OPEN_REDIRECT_TARGET)) continue;
           observations.push(
             makeObs(endpoint.url, probeUrl, {
               ruleId: "open-redirect",
@@ -448,7 +463,7 @@ export async function checkOpenRedirect(
               references: [
                 "https://owasp.org/www-community/attacks/Unvalidated_Redirects_and_Forwards_Cheat_Sheet",
               ],
-            }),
+            }, `Control Location was ${controlLocation || "absent"}; repeated canary Location was ${location}.`),
           );
           break;
         }
@@ -462,54 +477,11 @@ export async function checkOpenRedirect(
 }
 
 export async function checkCommandInjection(
-  client: ScannerHttpClient,
-  endpoint: DiscoveredEndpoint,
+  _client: ScannerHttpClient,
+  _endpoint: DiscoveredEndpoint,
+  _options: { timingValidation?: boolean } = {},
 ): Promise<RawObservation[]> {
-  if (!endpoint.url.startsWith("http")) return [];
-  const observations: RawObservation[] = [];
-  // Only probe params that commonly feed into OS commands
-  const params = getParams(endpoint).filter((p) =>
-    /cmd|exec|command|run|ping|host|ip|domain|lookup|query|file|path|name/i.test(p),
-  );
-
-  for (const param of params) {
-    for (const payload of [CMDI_PAYLOAD_UNIX, CMDI_PAYLOAD_WIN]) {
-      const probeUrl = injectParam(endpoint.url, param, payload);
-      try {
-        const t0 = Date.now();
-        await client.get(probeUrl, STAGE);
-        const elapsed = Date.now() - t0;
-        if (elapsed >= CMDI_TIME_THRESHOLD_MS) {
-          observations.push(
-            makeObs(endpoint.url, probeUrl, {
-              ruleId: "command-injection",
-              title: "Command Injection — Time-based Blind",
-              severity: "critical",
-              confidence: "medium",
-              cwe: "CWE-78",
-              owaspCategory: "OWASP A03:2021 — Injection",
-              rootCause:
-                `Response to '${payload}' in '${param}' was delayed ${elapsed}ms, consistent with OS sleep/timeout execution.`,
-              impact:
-                "An attacker can execute arbitrary OS commands on the server, leading to full system compromise, " +
-                "data exfiltration, and lateral movement into internal networks.",
-              remediation:
-                "Never pass user input to OS command execution functions. Use language-native APIs instead " +
-                "(e.g. dns.lookup() instead of exec('nslookup ...')). If shell invocation is unavoidable, " +
-                "use an explicit allow-list for input values.",
-              references: [
-                "https://owasp.org/www-community/attacks/Command_Injection",
-                "https://portswigger.net/web-security/os-command-injection",
-              ],
-            }),
-          );
-          break;
-        }
-      } catch {
-        // non-fatal
-      }
-    }
-  }
-
-  return observations;
+  // Deliberately unavailable: even a sleep/timeout canary executes an OS
+  // command on the target. The scanner does not issue command payloads.
+  return [];
 }

@@ -13,6 +13,7 @@ import scopeRoutes from "./routes/scope.js";
 import scanRoutes from "./routes/scans.js";
 import reportRoutes from "./routes/reports.js";
 import auditRoutes from "./routes/audit.js";
+import { scanQueue } from "./services/scanQueue.js";
 
 export function buildServer() {
   const app = Fastify({
@@ -62,6 +63,9 @@ export function buildServer() {
   app.register(scanRoutes);
   app.register(reportRoutes);
   app.register(auditRoutes);
+
+  app.addHook("onReady", async () => scanQueue.start());
+  app.addHook("onClose", async () => scanQueue.stop());
 
   app.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
 

@@ -25,7 +25,7 @@ export function checkSecurityHeaders(exchange: HttpExchange): RawObservation[] {
         ruleId: "cors-wildcard-with-credentials",
         title: "CORS allows any origin with credentials",
         severity: "critical",
-        confidence: "confirmed",
+        confidence: "high",
         cwe: "CWE-942",
         owaspCategory: "WSTG-CLNT-07",
         rootCause:

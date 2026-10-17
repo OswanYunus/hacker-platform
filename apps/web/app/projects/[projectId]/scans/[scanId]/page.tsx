@@ -30,6 +30,12 @@ interface ScanDetail {
   profile: string;
   requestCount: number;
   stopReason?: string;
+  capabilityReport?: {
+    profile: string;
+    effectiveBudgets: { maxPages: number; maxDepth: number; maxRequests: number; maxDurationSeconds: number };
+    capabilities: Record<string, { status: "ran" | "skipped" | "unavailable"; reason?: string }>;
+    notAssessed: string[];
+  };
 }
 
 export default function ScanLivePage() {
@@ -88,6 +94,7 @@ export default function ScanLivePage() {
       case "scan_completed":
         appendLog(`Scan completed — ${event.findingCount} finding(s), ${event.requestCount} requests issued.`, event.at);
         setDone(true);
+        api.get<{ scan: ScanDetail }>(`/api/scans/${params.scanId}`).then((r) => setScan(r.scan));
         break;
       case "scan_failed":
         appendLog(`Scan failed: ${event.reason}`, event.at);
@@ -199,6 +206,32 @@ export default function ScanLivePage() {
           </Panel>
 
           <div className="space-y-5">
+            {scan?.capabilityReport && (
+              <Panel>
+                <PanelHeader title="Assessment coverage" />
+                <div className="space-y-3 p-3 text-xs">
+                  <p className="text-ink-600">
+                    Effective limits: {scan.capabilityReport.effectiveBudgets.maxPages} pages, depth {scan.capabilityReport.effectiveBudgets.maxDepth}, {scan.capabilityReport.effectiveBudgets.maxRequests} requests, {scan.capabilityReport.effectiveBudgets.maxDurationSeconds}s.
+                  </p>
+                  <ul className="space-y-2">
+                    {Object.entries(scan.capabilityReport.capabilities).map(([name, capability]) => (
+                      <li key={name} className="flex flex-wrap gap-x-2">
+                        <span className={`font-medium ${capability.status === "ran" ? "text-[#2E6B1F]" : capability.status === "skipped" ? "text-[#8A5A00]" : "text-ink-600"}`}>
+                          {capability.status.toUpperCase()}
+                        </span>
+                        <span className="font-medium text-ink-900">{name.replace(/([A-Z])/g, " $1")}</span>
+                        {capability.reason && <span className="text-ink-600">— {capability.reason}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  {scan.capabilityReport.notAssessed.length > 0 && (
+                    <p className="border-t border-paper-200 pt-2 text-ink-600">
+                      Not assessed: {scan.capabilityReport.notAssessed.join(", ")}.
+                    </p>
+                  )}
+                </div>
+              </Panel>
+            )}
             <Panel>
               <PanelHeader title="Live log" />
               <div ref={logRef} className="mono h-40 overflow-y-auto bg-ink-950 p-3 text-2xs text-paper-100">

@@ -13,7 +13,7 @@ function obs(url: string, ruleId = "missing-hsts"): RawObservation {
     impact: "y",
     remediation: "z",
     references: [],
-    evidence: [{ description: "evidence" }],
+    evidence: [{ description: "Observed header", exchangeId: "ex_test" }],
     reproduction: "repro",
     verification: "confirmed",
     firstSeenStage: "passive_analysis",
@@ -27,6 +27,7 @@ describe("correlateFindings", () => {
     const findings = correlateFindings(observations);
     expect(findings).toHaveLength(1);
     expect(findings[0].occurrences).toBe(50);
+    expect(findings[0].verification).toBe("evidence_supported");
   });
 
   it("keeps distinct rule findings separate", () => {
@@ -46,5 +47,21 @@ describe("correlateFindings", () => {
     const low = { ...obs("https://example.com/l", "low-rule"), severity: "low" as const };
     const findings = correlateFindings([low, critical]);
     expect(findings[0].severity).toBe("critical");
+  });
+
+  it("does not preserve a check's unsupported confirmed label", () => {
+    const unsupported = { ...obs("https://example.com/a", "missing-hsts"), evidence: [{ description: "claim" }] };
+    const [finding] = correlateFindings([unsupported]);
+    expect(finding.verification).toBe("inconclusive");
+    expect(finding.verification).not.toBe("confirmed");
+    expect(finding.verification).not.toBe("independently_verified");
+  });
+
+  it("requires a same-origin probe URL for active injection evidence", () => {
+    const active = {
+      ...obs("https://example.com/search", "sqli-error-based"),
+      evidence: [{ description: "Database error matched", detail: "Probe URL: https://other.example/p?q=x" }],
+    };
+    expect(correlateFindings([active])[0].verification).toBe("inconclusive");
   });
 });

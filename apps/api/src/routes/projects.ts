@@ -66,7 +66,18 @@ export default async function projectRoutes(app: FastifyInstance) {
     const project = await prisma.project.findUnique({
       where: { id: projectId },
       include: {
-        targets: true,
+        targets: {
+          select: {
+            id: true,
+            projectId: true,
+            type: true,
+            value: true,
+            label: true,
+            verificationRecordName: true,
+            verifiedAt: true,
+            createdAt: true,
+          },
+        },
         scopeVersions: { orderBy: { createdAt: "desc" }, include: { authorizedBy: { select: { id: true, name: true, email: true } } } },
         authConfigs: { select: { id: true, roleLabel: true, mechanism: true, loginUrl: true, createdAt: true } },
         scans: { orderBy: { createdAt: "desc" }, take: 20 },

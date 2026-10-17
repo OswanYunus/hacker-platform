@@ -1,4 +1,4 @@
-import { ScannerHttpClient, BudgetExceededError, ScopeViolationError } from "./httpClient.js";
+import { ScannerHttpClient, BudgetExceededError, RequestCancelledError, ScopeViolationError } from "./httpClient.js";
 import { crawl } from "./crawler.js";
 import { checkSecurityHeaders, checkCorsReflection } from "./checks/headers.js";
 import { checkCookies } from "./checks/cookies.js";
@@ -26,14 +26,8 @@ import { validateScope } from "./scope.js";
 import { detectTechnologies } from "./techDetection.js";
 import { reviewPublicDocuments } from "./checks/governance.js";
 import { compareAnonymousAccess, discoverApiSpecGetRoutes, type ApiSpecRoute } from "./checks/apiSurface.js";
+import { effectiveProfile, type ScanCapabilityReport } from "./profiles.js";
 import type { HttpExchange, RawObservation, ScanEvent, ScanResult, ScanRunConfig, ScanStage } from "./types.js";
-
-const PROFILE_LIMITS: Record<string, { maxPages: number; maxDepth: number }> = {
-  quick: { maxPages: 25, maxDepth: 2 },
-  standard: { maxPages: 100, maxDepth: 3 },
-  deep: { maxPages: 400, maxDepth: 6 },
-  ci: { maxPages: 50, maxDepth: 2 },
-};
 
 /** Common sensitive paths probed during discovery. Passive from the
  * scanner's point of view: it only observes how the server already
@@ -67,6 +61,10 @@ const SENSITIVE_PATH_PROBES = [
   "/sitemap.xml",
 ];
 
+export function discoveryProbePaths(activeTestingAllowed: boolean): string[] {
+  return activeTestingAllowed ? [...SENSITIVE_PATH_PROBES] : [];
+}
+
 export class ScanCancelledError extends Error {}
 
 export interface EngineHandle {
@@ -81,21 +79,28 @@ export async function runScan(
   const startedAt = new Date().toISOString();
   const stageDurations: Partial<Record<ScanStage, number>> = {};
   let cancelled = false;
-  if (handle) handle.cancel = () => (cancelled = true);
+  const capabilities = effectiveProfile(config.profile, config.scope.activeTestingAllowed, config.scope);
+  const executionScope = { ...config.scope, maxTotalRequests: capabilities.maxRequests, maxScanDurationSeconds: capabilities.maxDurationSeconds };
 
   const checkCancelled = () => {
     if (cancelled) throw new ScanCancelledError();
   };
 
   const allExchanges: HttpExchange[] = [];
+  let apiRoutesAttempted = 0;
   const client = new ScannerHttpClient({
-    scope: config.scope,
+    scope: executionScope,
     auth: config.authContext,
+    requestTimeoutMs: Math.min(15_000, executionScope.maxScanDurationSeconds * 1000),
     onExchange: (ex) => {
       allExchanges.push(ex);
       emit({ type: "request_issued", method: ex.request.method, url: ex.request.url, stage: ex.stage, at: new Date().toISOString() });
     },
   });
+  if (handle) handle.cancel = () => {
+    cancelled = true;
+    client.cancel();
+  };
 
   const runStage = async <T>(stage: ScanStage, fn: () => Promise<T>): Promise<T> => {
     checkCancelled();
@@ -113,6 +118,26 @@ export async function runScan(
   };
 
   try {
+    const capabilityReport: ScanCapabilityReport = {
+      profile: config.profile,
+      effectiveBudgets: { maxPages: capabilities.maxPages, maxDepth: capabilities.maxDepth, maxRequests: capabilities.maxRequests, maxDurationSeconds: capabilities.maxDurationSeconds },
+      capabilities: {
+        crawl: { status: "ran" },
+        passiveConfigurationChecks: { status: "ran" },
+        fixedPathDiscovery: capabilities.fixedPathDiscovery ? { status: "ran" } : { status: "skipped", reason: config.scope.activeTestingAllowed ? "Disabled by selected profile." : "Active testing is disabled by authorization scope." },
+        apiSpecRouteRequests: capabilities.apiRouteRequests ? { status: "ran" } : { status: "skipped", reason: config.scope.activeTestingAllowed ? "Disabled by selected profile." : "Active testing is disabled by authorization scope." },
+        injectionAndAccessChecks: capabilities.activeChecks ? { status: "ran" } : { status: "skipped", reason: config.scope.activeTestingAllowed ? "Disabled by selected profile." : "Active testing is disabled by authorization scope." },
+        authenticatedApiComparison: capabilities.authComparison && !!config.authContext ? { status: "ran" } : { status: "skipped", reason: !config.scope.activeTestingAllowed ? "Active testing is disabled by authorization scope." : !config.authContext ? "No test identity configured." : "Disabled by selected profile." },
+        pairedTimingValidation: capabilities.pairedTimingValidation ? { status: "ran" } : { status: "skipped", reason: config.profile !== "deep" ? "Available only in Deep profile." : "Active testing is disabled by authorization scope." },
+        commandInjectionValidation: { status: "unavailable", reason: "No safe non-command-executing live validator is implemented; command payloads are never sent." },
+        multiIdentityObjectAuthorization: { status: "unavailable", reason: "Current configuration supports one test identity and anonymous comparison only." },
+        javascriptRuntimeDiscovery: { status: "unavailable", reason: "No browser runtime is configured." },
+        dependencyVulnerabilityAnalysis: { status: "unavailable", reason: "No dependency inventory or advisory database is configured." },
+        adaptiveFollowUp: { status: "unavailable", reason: "No adaptive planner is configured; checks are deterministic." },
+        independentVerification: { status: "unavailable", reason: "Current validators provide reproducible evidence but no independent verifier." },
+      },
+      notAssessed: ["multi-identity object access control", "JavaScript runtime behavior", "dependency vulnerabilities", "adaptive follow-up investigation", "independent verification"],
+    };
     // 1. Scope validation
     await runStage("scope_validation", async () => {
       for (const base of config.targetBaseUrls) {
@@ -131,11 +156,11 @@ export async function runScan(
     });
 
     // 3 + 4. Crawling + endpoint discovery
-    const limits = PROFILE_LIMITS[config.profile] ?? PROFILE_LIMITS.standard;
+    const limits = capabilities;
     const crawlResult = await runStage("crawling", () =>
       crawl(client, {
         startUrls: config.targetBaseUrls,
-        scope: config.scope,
+        scope: executionScope,
         maxPages: limits.maxPages,
         maxDepth: limits.maxDepth,
         onPageCrawled: (ep) => emit({ type: "endpoint_discovered", endpoint: ep, at: new Date().toISOString() }),
@@ -144,25 +169,41 @@ export async function runScan(
 
     const authenticatedApiRoutes: Array<{ route: ApiSpecRoute; exchange: HttpExchange }> = [];
     await runStage("endpoint_discovery", async () => {
-      // Probe well-known sensitive paths per discovered host, within budget.
+      // Fixed-path enumeration sends requests to routes that were not
+      // discovered through ordinary crawling. Treat it as active testing.
       const hosts = new Set(config.targetBaseUrls.map((u) => new URL(u).origin));
-      for (const origin of hosts) {
-        for (const path of SENSITIVE_PATH_PROBES) {
-          const url = origin + path;
-          if (!validateScope(url, config.scope).inScope) continue;
-          try {
-            await client.get(url, "endpoint_discovery");
-          } catch (e) {
-            if (e instanceof BudgetExceededError) return;
-            if (e instanceof ScopeViolationError) continue;
+      const discoveryPaths = discoveryProbePaths(capabilities.fixedPathDiscovery);
+      if (discoveryPaths.length === 0) {
+        emit({ type: "scan_log", level: "info", message: "Fixed-path enumeration skipped because active testing is disabled.", at: new Date().toISOString() });
+      } else {
+        for (const origin of hosts) {
+          for (const path of discoveryPaths) {
+            const url = origin + path;
+            if (!validateScope(url, config.scope).inScope) continue;
+            try {
+              await client.get(url, "endpoint_discovery");
+            } catch (e) {
+              if (e instanceof BudgetExceededError) return;
+              if (e instanceof ScopeViolationError) continue;
+            }
           }
         }
       }
 
       const apiRoutes = discoverApiSpecGetRoutes(allExchanges, config.scope, limits.maxPages);
+      if (!capabilities.apiRouteRequests) {
+        emit({
+          type: "scan_log",
+          level: "info",
+          message: `OpenAPI declared ${apiRoutes.length} in-scope GET route(s); route requests and authenticated comparisons skipped because active testing is disabled.`,
+          at: new Date().toISOString(),
+        });
+        return;
+      }
       let discovered = 0;
       for (const route of apiRoutes) {
         checkCancelled();
+        apiRoutesAttempted++;
         try {
           const exchange = await client.get(route.url, "endpoint_discovery");
           discovered++;
@@ -214,11 +255,11 @@ export async function runScan(
       }
       // CORS reflection probe: one cheap extra request per distinct origin,
       // only if active testing is allowed (it sends a non-default header).
-      if (config.scope.activeTestingAllowed) {
+      if (capabilities.activeChecks) {
         for (const base of config.targetBaseUrls) {
           try {
             const probeOrigin = "https://scan-probe.invalid.example";
-            const ex = await client.request("GET", base, "passive_analysis", {
+            const ex = await client.request("GET", base, "active_testing", {
               headers: { Origin: probeOrigin },
             });
             rawObservations.push(...checkCorsReflection(ex, probeOrigin));
@@ -226,13 +267,15 @@ export async function runScan(
             /* non-fatal */
           }
         }
+      } else {
+        emit({ type: "scan_log", level: "info", message: "CORS reflection probe skipped by the selected profile or authorization scope.", at: new Date().toISOString() });
       }
     });
 
     // 7. Compare owner-provided test-role access with anonymous access to
     // API routes whose published specification declares authentication.
     await runStage("auth_session_analysis", async () => {
-      if (!config.authContext) {
+      if (!config.authContext || !capabilities.authComparison) {
         emit({
           type: "scan_log",
           level: "info",
@@ -268,7 +311,7 @@ export async function runScan(
     // 8. Active security tests — gated on scope.activeTestingAllowed.
     // Injection, authorization/IDOR, and non-credential session checks.
     await runStage("active_testing", async () => {
-      if (!config.scope.activeTestingAllowed) {
+      if (!capabilities.activeChecks) {
         emit({
           type: "scan_log",
           level: "info",
@@ -295,6 +338,7 @@ export async function runScan(
       }
 
       // --- Per-endpoint probes ---
+      const checkedAdminOrigins = new Set<string>();
       for (const endpoint of crawlResult.endpoints) {
         checkCancelled();
 
@@ -307,19 +351,21 @@ export async function runScan(
         }
 
         // Authorization probes
-        rawObservations.push(
-          ...(await checkPrivilegedPathAccess(client, endpoint)),
-          ...(await checkSequentialIdor(client, endpoint)),
-        );
+        const endpointOrigin = new URL(endpoint.url).origin;
+        if (!checkedAdminOrigins.has(endpointOrigin)) {
+          checkedAdminOrigins.add(endpointOrigin);
+          rawObservations.push(...(await checkPrivilegedPathAccess(client, endpoint)));
+        }
+        rawObservations.push(...(await checkSequentialIdor(client, endpoint)));
 
         // Injection probes
         rawObservations.push(
-          ...(await checkSqliGetParams(client, endpoint)),
+          ...(await checkSqliGetParams(client, endpoint, { timingValidation: capabilities.pairedTimingValidation })),
           ...(await checkReflectedXss(client, endpoint)),
           ...(await checkPathTraversal(client, endpoint)),
           ...(await checkSsti(client, endpoint)),
           ...(await checkOpenRedirect(client, endpoint)),
-          ...(await checkCommandInjection(client, endpoint)),
+          ...(await checkCommandInjection(client, endpoint, { timingValidation: capabilities.pairedTimingValidation })),
         );
 
         // Credential guessing and lockout-triggering checks are deliberately
@@ -345,6 +391,17 @@ export async function runScan(
     await runStage("report_generation", async () => {});
 
     const completedAt = new Date().toISOString();
+    const ran = (key: string, didRun: boolean, reason: string) => {
+      capabilityReport.capabilities[key] = didRun ? { status: "ran" } : { status: "skipped", reason };
+    };
+    const fixedPathSet = new Set(SENSITIVE_PATH_PROBES);
+    ran("fixedPathDiscovery", capabilities.fixedPathDiscovery && allExchanges.some((exchange) => {
+      try { return exchange.stage === "endpoint_discovery" && fixedPathSet.has(new URL(exchange.request.url).pathname); } catch { return false; }
+    }), "No in-scope fixed path requests were issued (profile, scope, or request budget may have skipped them).");
+    ran("apiSpecRouteRequests", capabilities.apiRouteRequests && apiRoutesAttempted > 0, "No in-scope GET routes were available from published API specifications.");
+    ran("injectionAndAccessChecks", capabilities.activeChecks && crawlResult.endpoints.length > 0, "No active check requests ran because the profile, scope, or discovery results did not permit them.");
+    ran("authenticatedApiComparison", capabilities.authComparison && allExchanges.some((exchange) => exchange.stage === "auth_session_analysis"), "No documented protected GET route was available for anonymous comparison.");
+    ran("pairedTimingValidation", capabilities.pairedTimingValidation && allExchanges.some((exchange) => /SLEEP|pg_sleep/i.test(exchange.request.url)), "No eligible timing probe ran; a relevant parameter or request budget may have been unavailable.");
     emit({ type: "scan_completed", at: completedAt, findingCount: prioritized.length, requestCount: client.totalRequests });
 
     return {
@@ -357,10 +414,11 @@ export async function runScan(
       requestCount: client.totalRequests,
       stageDurationsMs: stageDurations,
       stopReason: crawlResult.stopReason === "budget_exceeded" ? "request_limit" : "completed",
+      capabilityReport,
     };
   } catch (e) {
     const at = new Date().toISOString();
-    if (e instanceof ScanCancelledError) {
+    if (e instanceof ScanCancelledError || e instanceof RequestCancelledError) {
       emit({ type: "scan_cancelled", at });
       return {
         scanId: config.scanId,

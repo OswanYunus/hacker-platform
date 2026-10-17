@@ -42,6 +42,14 @@ unset to use the bundled Postgres container. Set it only when you intentionally
 want to reuse an existing database reachable from Docker; the app applies any
 pending Prisma migrations when it starts.
 
+By default, scan creation requires a live DNS TXT control proof for every
+authorized hostname. For a temporary local assessment, you can set
+`DNS_VERIFICATION_EXEMPT_HOSTS` in `.env.docker` to exact hostnames, separated
+by commas. Wildcards are not accepted, and an exemption only applies if that
+exact hostname is also the project's authorized host. The audit trail records
+when a proof is skipped. Remove this setting and recreate the API container to
+restore mandatory DNS proof.
+
 ## 4. Start the public tunnel
 
 In another PowerShell window:

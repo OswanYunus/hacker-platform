@@ -116,12 +116,15 @@ enum TargetType {
 }
 
 model Target {
-  id        String     @id @default(cuid())
-  projectId String
-  type      TargetType
-  value     String
-  label     String?
-  createdAt DateTime   @default(now())
+  id                       String     @id @default(cuid())
+  projectId                String
+  type                     TargetType
+  value                    String
+  label                    String?
+  verificationRecordName   String?
+  verificationTokenHash    Bytes?
+  verifiedAt               DateTime?
+  createdAt                DateTime   @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -246,8 +249,16 @@ model Scan {
   triggerSource    String      @default("manual") // manual | ci | api | schedule
   startedAt        DateTime?
   completedAt      DateTime?
+  heartbeatAt       DateTime?
+  leaseExpiresAt    DateTime?
+  workerId          String?
+  cancelRequestedAt DateTime?
+  attempt           Int         @default(0)
+  currentStage      String?
+  progressPercent   Int         @default(0)
   requestCount     Int         @default(0)
   stopReason       String?
+  capabilityReport Json?
   failureReason    String?
   createdAt        DateTime    @default(now())
 
@@ -263,6 +274,8 @@ model Scan {
   reports     Report[]
 
   @@index([projectId, createdAt])
+  @@index([status, createdAt])
+  @@index([status, leaseExpiresAt])
 }
 
 model ScanStageEvent {
